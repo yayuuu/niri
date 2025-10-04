@@ -3062,6 +3062,7 @@ impl State {
                                 cooldown: None,
                                 allow_when_locked: false,
                                 allow_inhibiting: false,
+                                allow_invalidation: false,
                                 hotkey_overlay_title: None,
                             });
                             let bind_right = Some(Bind {
@@ -3075,6 +3076,7 @@ impl State {
                                 cooldown: None,
                                 allow_when_locked: false,
                                 allow_inhibiting: false,
+                                allow_invalidation: false,
                                 hotkey_overlay_title: None,
                             });
                             (bind_left, bind_right)
@@ -3127,6 +3129,7 @@ impl State {
                             cooldown: Some(Duration::from_millis(50)),
                             allow_when_locked: false,
                             allow_inhibiting: false,
+                            allow_invalidation: false,
                             hotkey_overlay_title: None,
                         });
                         let bind_down = Some(Bind {
@@ -3140,6 +3143,7 @@ impl State {
                             cooldown: Some(Duration::from_millis(50)),
                             allow_when_locked: false,
                             allow_inhibiting: false,
+                            allow_invalidation: false,
                             hotkey_overlay_title: None,
                         });
                         (bind_up, bind_down)
@@ -3155,6 +3159,7 @@ impl State {
                             cooldown: Some(Duration::from_millis(50)),
                             allow_when_locked: false,
                             allow_inhibiting: false,
+                            allow_invalidation: false,
                             hotkey_overlay_title: None,
                         });
                         let bind_down = Some(Bind {
@@ -3168,6 +3173,7 @@ impl State {
                             cooldown: Some(Duration::from_millis(50)),
                             allow_when_locked: false,
                             allow_inhibiting: false,
+                            allow_invalidation: false,
                             hotkey_overlay_title: None,
                         });
                         (bind_up, bind_down)
@@ -4325,6 +4331,7 @@ fn should_intercept_key<'a>(
                     // But logically, nothing can inhibit its actions. Only opening it can be
                     // inhibited.
                     allow_inhibiting: false,
+                    allow_invalidation: true,
                     hotkey_overlay_title: None,
                 });
             }
@@ -4361,7 +4368,9 @@ fn should_intercept_key<'a>(
 
             // If this is a valid release bind, handle it
             if let Some(bind) = final_bind {
-                if bind.release && valid_release_trigger == Some(key_code) {
+                if bind.release
+                    && (valid_release_trigger == Some(key_code) || !bind.allow_invalidation)
+                {
                     ShouldInterceptResult::InterceptAndHandle(bind)
                 } else {
                     ShouldInterceptResult::InterceptOnly
@@ -4370,7 +4379,10 @@ fn should_intercept_key<'a>(
                 ShouldInterceptResult::InterceptOnly
             }
         }
-        (Some(bind), false) if bind.release && valid_release_trigger == Some(key_code) => {
+        (Some(bind), false)
+            if bind.release
+                && (valid_release_trigger == Some(key_code) || !bind.allow_invalidation) =>
+        {
             // We don't need to check for shortcut inhibition here because if
             // it was inhibited on press it wouldn't be in valid_release_trigger.
             ShouldInterceptResult::ForwardAndHandle(bind)
@@ -4419,6 +4431,7 @@ fn find_bind<'a>(
             // It also makes no sense to inhibit the default power key handling.
             // Hardcoded binds must never be inhibited.
             allow_inhibiting: false,
+            allow_invalidation: false,
             hotkey_overlay_title: None,
         });
     }
@@ -4674,6 +4687,7 @@ fn hardcoded_overview_bind(raw: Keysym, mods: ModifiersState) -> Option<Bind> {
         cooldown: None,
         allow_when_locked: false,
         allow_inhibiting: false,
+        allow_invalidation: false,
         hotkey_overlay_title: None,
     })
 }
@@ -5217,6 +5231,7 @@ mod tests {
             cooldown: None,
             allow_when_locked: false,
             allow_inhibiting: true,
+            allow_invalidation: true,
             hotkey_overlay_title: None,
         }]);
 
@@ -5357,6 +5372,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                allow_invalidation: true,
                 hotkey_overlay_title: None,
             },
             // Another release binding on the close key
@@ -5371,6 +5387,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                allow_invalidation: true,
                 hotkey_overlay_title: None,
             },
             // A normal binding for centering the column on the other key
@@ -5385,6 +5402,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                allow_invalidation: true,
                 hotkey_overlay_title: None,
             },
         ]);
@@ -5498,6 +5516,89 @@ mod tests {
     }
 
     #[test]
+    fn test_non_invalidatable_bindings() {
+        let bindings = Binds(vec![
+            // A compositor-only release binding which can't be invalidated
+            Bind {
+                key: Key {
+                    trigger: Trigger::KeyCompositor,
+                    modifiers: Modifiers::empty(),
+                },
+                action: Action::ToggleOverview,
+                repeat: true,
+                release: true,
+                cooldown: None,
+                allow_when_locked: false,
+                allow_inhibiting: true,
+                allow_invalidation: false,
+                hotkey_overlay_title: None,
+            },
+            // Another release binding on the close key
+            Bind {
+                key: Key {
+                    trigger: Trigger::Keysym(CLOSE_KEYSYM),
+                    modifiers: Modifiers::COMPOSITOR,
+                },
+                action: Action::CloseWindow,
+                repeat: true,
+                release: true,
+                cooldown: None,
+                allow_when_locked: false,
+                allow_inhibiting: true,
+                allow_invalidation: true,
+                hotkey_overlay_title: None,
+            },
+        ]);
+
+        let mut common_state = create_test_state();
+        let mut mods: ModifiersState = Default::default();
+
+        // The mod bind should still trigger because it can't be invalidated
+        let result = process_mod_key(&mut common_state, &bindings, &mut mods, true);
+        assert_matches!(result, ShouldInterceptResult::Forward);
+
+        let result = process_close_key(&mut common_state, &bindings, mods, true);
+        assert_matches!(result, ShouldInterceptResult::InterceptOnly);
+
+        let result = process_mod_key(&mut common_state, &bindings, &mut mods, false);
+        assert_matches!(
+            result,
+            ShouldInterceptResult::ForwardAndHandle(Bind {
+                action: Action::ToggleOverview,
+                ..
+            })
+        );
+
+        let result = process_close_key(&mut common_state, &bindings, mods, false);
+        assert_matches!(result, ShouldInterceptResult::InterceptOnly);
+
+        // Both should fire
+        let result = process_mod_key(&mut common_state, &bindings, &mut mods, true);
+        assert_matches!(result, ShouldInterceptResult::Forward);
+
+        let result = process_close_key(&mut common_state, &bindings, mods, true);
+        assert_matches!(result, ShouldInterceptResult::InterceptOnly);
+
+        let result = process_close_key(&mut common_state, &bindings, mods, false);
+        assert_matches!(
+            result,
+            ShouldInterceptResult::InterceptAndHandle(Bind {
+                action: Action::CloseWindow,
+                ..
+            })
+        );
+
+        let result = process_mod_key(&mut common_state, &bindings, &mut mods, false);
+        assert_matches!(
+            result,
+            ShouldInterceptResult::ForwardAndHandle(Bind {
+                action: Action::ToggleOverview,
+                ..
+            })
+        );
+    }
+
+    #[test]
     fn test_non_inhibitable_bindings() {
         let bindings = Binds(vec![Bind {
             key: Key {
@@ -5510,6 +5611,7 @@ mod tests {
             cooldown: None,
             allow_when_locked: false,
             allow_inhibiting: false, // This binding cannot be inhibited
+            allow_invalidation: true,
             hotkey_overlay_title: None,
         }]);
 
@@ -5555,6 +5657,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                allow_invalidation: true,
                 hotkey_overlay_title: None,
             },
             Bind {
@@ -5568,6 +5671,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                allow_invalidation: true,
                 hotkey_overlay_title: None,
             },
             Bind {
@@ -5581,6 +5685,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                allow_invalidation: true,
                 hotkey_overlay_title: None,
             },
             Bind {
@@ -5594,6 +5699,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                allow_invalidation: true,
                 hotkey_overlay_title: None,
             },
             Bind {
@@ -5607,6 +5713,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                allow_invalidation: true,
                 hotkey_overlay_title: None,
             },
             Bind {
@@ -5620,6 +5727,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                allow_invalidation: true,
                 hotkey_overlay_title: None,
             },
         ]);
