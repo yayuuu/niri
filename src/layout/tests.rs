@@ -918,6 +918,7 @@ impl Op {
                     false,
                     is_floating,
                     ActivateWindow::default(),
+                    None,
                 );
             }
             Op::AddWindowNextTo {
@@ -987,6 +988,7 @@ impl Op {
                     false,
                     is_floating,
                     ActivateWindow::default(),
+                    None,
                 );
             }
             Op::AddWindowToNamedWorkspace {
@@ -1061,6 +1063,7 @@ impl Op {
                     false,
                     is_floating,
                     ActivateWindow::default(),
+                    None,
                 );
             }
             Op::CloseWindow(id) => {
