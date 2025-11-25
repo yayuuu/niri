@@ -4859,7 +4859,7 @@ impl<W: LayoutElement> Layout<W> {
                 let fx_buffers = EffectsFramebuffers::get_user_data(output);
                 let iter = move_
                     .tile
-                    .render(renderer, location, true, target, fx_buffers)
+                    .render(renderer, location, true, target, fx_buffers, Some(zoom))
                     .map(move |elem| {
                         RescaleRenderElement::from_element(
                             elem,

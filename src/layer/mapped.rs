@@ -249,6 +249,7 @@ impl MappedLayer {
                         .top_left,
                     self.scale,
                     self.blur_config,
+                    1.,
                 )
                 .into(),
             )

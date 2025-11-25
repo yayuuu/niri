@@ -1142,6 +1142,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         target: RenderTarget,
         focus_ring: bool,
         fx_buffers: Option<EffectsFramebufffersUserData>,
+        overview_zoom: f64,
     ) -> Vec<FloatingSpaceRenderElement<R>> {
         let mut rv = Vec::new();
 
@@ -1161,8 +1162,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
             let focus_ring = focus_ring && Some(tile.focused_window().id()) == active.as_ref();
 
             rv.extend(
-                tile.render(renderer, tile_pos, focus_ring, target, fx_buffers.clone())
-                    .map(Into::into),
+                tile.render(
+                    renderer,
+                    tile_pos,
+                    focus_ring,
+                    target,
+                    fx_buffers.clone(),
+                    Some(overview_zoom),
+                )
+                .map(Into::into),
             );
         }
 

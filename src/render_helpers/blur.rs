@@ -301,6 +301,10 @@ impl EffectsFramebuffers {
             CurrentBuffer::Swapped => (&self.effects_swapped, &mut self.effects),
         }
     }
+
+    pub fn output_size(&self) -> Size<i32, Physical> {
+        self.output_size
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

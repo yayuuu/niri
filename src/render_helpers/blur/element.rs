@@ -110,11 +110,17 @@ impl BlurRenderElement {
         corner_radius: f32,
         scale: f64,
         config: Blur,
+        zoom: f64,
     ) -> Self {
+        let mut final_sample_area = sample_area.to_f64().upscale(zoom);
+        let center = (fx_buffers.borrow().output_size.to_f64().to_logical(scale) / 2.).to_point();
+        final_sample_area.loc.x = center.x - (center.x - sample_area.loc.x as f64) * zoom;
+        final_sample_area.loc.y = center.y - (center.y - sample_area.loc.y as f64) * zoom;
+
         Self::TrueBlur {
             id: Id::new(),
             scale,
-            src: sample_area.to_f64(),
+            src: final_sample_area,
             transform: Transform::Normal,
             size: sample_area.size,
             corner_radius,

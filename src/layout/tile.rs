@@ -1593,6 +1593,7 @@ impl<W: LayoutElement> Tile<W> {
         Point::from((0., y))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_inner<'a, R: NiriRenderer + 'a>(
         &'a self,
         renderer: &mut R,
@@ -1601,6 +1602,7 @@ impl<W: LayoutElement> Tile<W> {
         focus_ring: bool,
         target: RenderTarget,
         fx_buffers: Option<EffectsFramebufffersUserData>,
+        overview_zoom: Option<f64>,
     ) -> impl Iterator<Item = TileRenderElement<R>> + 'a {
         let _span = tracy_client::span!("Tile::render_inner");
 
@@ -1928,6 +1930,7 @@ impl<W: LayoutElement> Tile<W> {
                             radius.top_left,
                             self.scale,
                             self.blur_config,
+                            overview_zoom.unwrap_or(1.),
                         )
                         .into(),
                     )
@@ -1963,6 +1966,7 @@ impl<W: LayoutElement> Tile<W> {
         focus_ring: bool,
         target: RenderTarget,
         fx_buffers: Option<EffectsFramebufffersUserData>,
+        overview_zoom: Option<f64>,
     ) -> impl Iterator<Item = TileRenderElement<R>> + 'a {
         let _span = tracy_client::span!("Tile::render");
 
@@ -1988,6 +1992,7 @@ impl<W: LayoutElement> Tile<W> {
                 focus_ring,
                 target,
                 fx_buffers.clone(),
+                overview_zoom,
             );
             let elements = elements.collect::<Vec<TileRenderElement<_>>>();
             match open.render(
@@ -2015,6 +2020,7 @@ impl<W: LayoutElement> Tile<W> {
                 focus_ring,
                 target,
                 fx_buffers.clone(),
+                overview_zoom,
             );
             let elements = elements.collect::<Vec<TileRenderElement<_>>>();
             match alpha.offscreen.render(renderer, scale, &elements) {
@@ -2032,9 +2038,15 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         if open_anim_elem.is_none() && alpha_anim_elem.is_none() {
-            window_elems = Some(
-                self.render_inner(renderer, location, location, focus_ring, target, fx_buffers),
-            );
+            window_elems = Some(self.render_inner(
+                renderer,
+                location,
+                location,
+                focus_ring,
+                target,
+                fx_buffers,
+                overview_zoom,
+            ));
         }
 
         open_anim_elem
@@ -2060,6 +2072,7 @@ impl<W: LayoutElement> Tile<W> {
             false,
             RenderTarget::Output,
             None,
+            None,
         );
 
         // A bit of a hack to render blocked out as for screencast, but I think it's fine here.
@@ -2068,6 +2081,7 @@ impl<W: LayoutElement> Tile<W> {
             Point::from((0., 0.)),
             false,
             RenderTarget::Screencast,
+            None,
             None,
         );
 

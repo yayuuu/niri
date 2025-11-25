@@ -3248,6 +3248,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         target: RenderTarget,
         focus_ring: bool,
         fx_buffers: Option<EffectsFramebufffersUserData>,
+        overview_zoom: f64,
     ) -> Vec<ScrollingSpaceRenderElement<R>> {
         let mut rv = vec![];
 
@@ -3285,8 +3286,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 first = false;
 
                 rv.extend(
-                    tile.render(renderer, tile_pos, focus_ring, target, fx_buffers.clone())
-                        .map(Into::into),
+                    tile.render(
+                        renderer,
+                        tile_pos,
+                        focus_ring,
+                        target,
+                        fx_buffers.clone(),
+                        Some(overview_zoom),
+                    )
+                    .map(Into::into),
                 );
             }
         }

@@ -1724,6 +1724,7 @@ impl<W: LayoutElement> Workspace<W> {
         renderer: &mut R,
         target: RenderTarget,
         focus_ring: bool,
+        overview_zoom: f64,
     ) -> (
         impl Iterator<Item = WorkspaceRenderElement<R>>,
         impl Iterator<Item = WorkspaceRenderElement<R>>,
@@ -1738,6 +1739,7 @@ impl<W: LayoutElement> Workspace<W> {
             target,
             scrolling_focus_ring,
             fx_buffers.clone(),
+            overview_zoom,
         );
         let scrolling = scrolling.into_iter().map(WorkspaceRenderElement::from);
 
@@ -1750,6 +1752,7 @@ impl<W: LayoutElement> Workspace<W> {
                 target,
                 floating_focus_ring,
                 fx_buffers.clone(),
+                overview_zoom,
             );
             floating.into_iter().map(WorkspaceRenderElement::from)
         });
