@@ -1107,6 +1107,20 @@ impl<W: LayoutElement> Tile<W> {
         );
     }
 
+    pub fn tab_indicator_content_offset(&self) -> Point<f64, Logical> {
+        if self.focused_window().sizing_mode() != SizingMode::Normal {
+            return Point::new(0., 0.);
+        }
+
+        match &self.window {
+            WindowInner::Single(_) => Point::default(),
+            WindowInner::Multiple {
+                windows,
+                focus_idx: _,
+            } => self.tab_indicator.content_offset(windows.len(), self.scale),
+        }
+    }
+
     pub fn tab_indicator_extra_size(&self) -> Size<f64, Logical> {
         if self.focused_window().sizing_mode() != SizingMode::Normal {
             return Size::new(0., 0.);
@@ -1252,6 +1266,8 @@ impl<W: LayoutElement> Tile<W> {
         loc = loc
             .to_physical_precise_round(self.scale)
             .to_logical(self.scale);
+
+        loc += self.tab_indicator_content_offset();
 
         loc
     }
@@ -1434,35 +1450,35 @@ impl<W: LayoutElement> Tile<W> {
     }
 
     pub fn tile_width_for_window_width(&self, size: f64) -> f64 {
-        if self.border.is_off() {
+        (if self.border.is_off() {
             size
         } else {
             size + self.border.width() * 2.
-        }
+        }) + self.tab_indicator_extra_size().w
     }
 
     pub fn tile_height_for_window_height(&self, size: f64) -> f64 {
-        if self.border.is_off() {
+        (if self.border.is_off() {
             size
         } else {
             size + self.border.width() * 2.
-        }
+        }) + self.tab_indicator_extra_size().h
     }
 
     pub fn window_width_for_tile_width(&self, size: f64) -> f64 {
-        if self.border.is_off() {
+        (if self.border.is_off() {
             size
         } else {
             size - self.border.width() * 2.
-        }
+        }) - self.tab_indicator_extra_size().w
     }
 
     pub fn window_height_for_tile_height(&self, size: f64) -> f64 {
-        if self.border.is_off() {
+        (if self.border.is_off() {
             size
         } else {
             size - self.border.width() * 2.
-        }
+        }) - self.tab_indicator_extra_size().h
     }
 
     pub fn request_maximized(
@@ -1572,20 +1588,7 @@ impl<W: LayoutElement> Tile<W> {
             alpha * (1. - p) + 1. * p
         };
 
-        let tab_indicator_offset = if self.focused_window().sizing_mode() == SizingMode::Normal {
-            if let WindowInner::Multiple {
-                windows,
-                focus_idx: _,
-            } = &self.window
-            {
-                self.tab_indicator
-                    .content_offset(windows.len(), self.scale())
-            } else {
-                Point::default()
-            }
-        } else {
-            Point::default()
-        };
+        let tab_indicator_offset = self.tab_indicator_content_offset();
 
         let tab_indicator_loc = location + self.bob_offset();
 
@@ -1599,7 +1602,10 @@ impl<W: LayoutElement> Tile<W> {
         // passed to update_render_elements(). But, it works well enough for what it is.
         let location = location + self.bob_offset() + tab_indicator_offset;
 
-        let window_loc = self.window_loc();
+        // `window_loc` already has the tab indicator offset applied to it for things like hit
+        // detection, so here we need to undo it for the rest of the render function to make sense
+        let window_loc = self.window_loc() - tab_indicator_offset;
+
         let window_size = self.window_size().to_f64();
         let animated_window_size = self.animated_window_size();
         let window_render_loc = location + window_loc;
