@@ -35,6 +35,7 @@ in
       proseWrap = "always";
     };
     includes = [
+      "README.md"
       "*README.md"
     ];
   };

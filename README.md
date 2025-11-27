@@ -21,9 +21,8 @@ the [original readme](./README_orig.md).
 Windows (both floating and tiling), as well as layer surfaces can have blur enabled on them. Blur needs to be enabled
 for each window / layer surface explicitly.
 
-Tiled windows will draw "optimized" blur that is rendered using only `bottom` and `background` layer surfaces. Floating
-windows, as well as `top` and `overlay` layer surfaces will draw "true" blur, that is rendered in an extra pass using
-all visible screen contents.
+Currently, all windows will draw "optimized" or "x-ray" blur, which is rendered separately using only the `bottom` and
+`background` layer surfaces.
 
 To set global defaults for blur:
 
@@ -79,7 +78,11 @@ layer-rule {
 
 #### Caveats
 
-- Floating windows currently blur incorrectly in the overview (the blur texture is zoomed-out twice).
+- Enabling blur currently incurs a noticeable increase in GPU utilization on high frame rates (tested with 240hz)
+  compared to other compositors with similar functionality (e.g. Hyprland). Investigating this will require some sort of
+  [GPU profiling](https://github.com/Smithay/smithay/pull/1134).
+- There is currently no way to enable "true" blur for floating windows or top / overlay layer surfaces. The
+  functionality exists in code, but is very slow / buggy at the moment.
 - Blur is currently only possible to be enabled through the config. Implementing both
   [KDE blur](https://wayland.app/protocols/kde-blur) and
   [background effect](https://wayland.app/protocols/ext-background-effect-v1) is planned though.
