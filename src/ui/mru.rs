@@ -13,6 +13,7 @@ use niri_config::{
 use pango::FontDescription;
 use pangocairo::cairo::{self, ImageSurface};
 use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::{
     Relocate, RelocateRenderElement, RescaleRenderElement,
 };
@@ -34,6 +35,7 @@ use crate::render_helpers::gradient_fade_texture::GradientFadeTextureRenderEleme
 use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenRenderElement};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
+use crate::render_helpers::shaders::Shaders;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
 use crate::render_helpers::RenderTarget;
@@ -110,7 +112,7 @@ pub enum MruCloseRequest {
 niri_render_elements! {
     ThumbnailRenderElement<R> => {
         LayoutElement = LayoutElementRenderElement<R>,
-        ClippedSurface = ClippedSurfaceRenderElement<R>,
+        ClippedSurface = ClippedSurfaceRenderElement<WaylandSurfaceRenderElement<R>, R>,
         Border = BorderRenderElement,
     }
 }
@@ -382,15 +384,24 @@ impl Thumbnail {
         .unwrap_or_default();
 
         let has_border_shader = BorderRenderElement::has_shader(renderer);
-        let clip_shader = ClippedSurfaceRenderElement::shader(renderer).cloned();
+        let clip_shader = Shaders::get(renderer).clipped_surface.clone();
         let geo = Rectangle::from_size(self.size.to_f64());
         // FIXME: deduplicate code with Tile::render_inner()
         let elems = elems.map(move |elem| match elem {
             LayoutElementRenderElement::Wayland(elem) => {
                 if let Some(shader) = clip_shader.clone() {
                     if ClippedSurfaceRenderElement::will_clip(&elem, s, geo, radius) {
-                        let elem =
-                            ClippedSurfaceRenderElement::new(elem, s, geo, shader.clone(), radius);
+                        let view_src = elem.view().src;
+                        let buf_size = elem.buffer_size();
+                        let elem = ClippedSurfaceRenderElement::new(
+                            elem,
+                            view_src,
+                            buf_size,
+                            s,
+                            geo,
+                            shader.clone(),
+                            radius,
+                        );
                         return ThumbnailRenderElement::ClippedSurface(elem);
                     }
                 }

@@ -6,6 +6,7 @@ use niri_config::utils::MergeWith as _;
 use niri_config::{Blur, Color, CornerRadius, GradientInterpolation};
 use niri_ipc::WindowLayout;
 use portable_atomic::AtomicU8;
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{Element, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
@@ -29,6 +30,7 @@ use crate::render_helpers::damage::ExtraDamage;
 use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenRenderElement};
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::resize::ResizeRenderElement;
+use crate::render_helpers::shaders::Shaders;
 use crate::render_helpers::shadow::ShadowRenderElement;
 use crate::render_helpers::snapshot::RenderSnapshot;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
@@ -426,7 +428,7 @@ niri_render_elements! {
         Border = BorderRenderElement,
         Shadow = ShadowRenderElement,
         Blur = BlurRenderElement,
-        ClippedSurface = ClippedSurfaceRenderElement<R>,
+        ClippedSurface = ClippedSurfaceRenderElement<WaylandSurfaceRenderElement<R>, R>,
         Offscreen = OffscreenRenderElement,
         ExtraDamage = ExtraDamage,
         TabIndicator = TabIndicatorRenderElement,
@@ -1776,7 +1778,7 @@ impl<W: LayoutElement> Tile<W> {
             let geo = Rectangle::new(window_render_loc, window_size);
             let radius = radius.fit_to(window_size.w as f32, window_size.h as f32);
 
-            let clip_shader = ClippedSurfaceRenderElement::shader(renderer).cloned();
+            let clip_shader = Shaders::get(renderer).clipped_surface.clone();
 
             if clip_to_geometry && clip_shader.is_some() {
                 let damage = self.rounded_corner_damage.element();
@@ -1789,8 +1791,12 @@ impl<W: LayoutElement> Tile<W> {
                     if clip_to_geometry {
                         if let Some(shader) = clip_shader.clone() {
                             if ClippedSurfaceRenderElement::will_clip(&elem, scale, geo, radius) {
+                                let view_src = elem.view().src;
+                                let buf_size = elem.buffer_size();
                                 return ClippedSurfaceRenderElement::new(
                                     elem,
+                                    view_src,
+                                    buf_size,
                                     scale,
                                     geo,
                                     shader.clone(),
