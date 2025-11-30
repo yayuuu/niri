@@ -225,6 +225,12 @@ impl Blur {
             && !variant_needs_reconfigure
         {
             if variant_needs_rerender {
+                // FIXME: currently, true blur only gets damaged on a fixed timer,
+                // which causes some artifacts for blur that is rendered above frequently
+                // updating surfaces (e.g. video, animated background). although this is preferable
+                // to re-rendering on every frame, the best solution would be to track "global
+                // output damage up to the point we're rendering", to find out whether or not we
+                // need to re-render true blur.
                 inner.damage_all();
             }
 
