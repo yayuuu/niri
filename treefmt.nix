@@ -35,6 +35,8 @@ in
       proseWrap = "always";
     };
     includes = [
+      "CONTRIBUTING.md"
+      "*CONTRIBUTING.md"
       "README.md"
       "*README.md"
     ];
