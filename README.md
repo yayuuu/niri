@@ -4,12 +4,14 @@
   <img height="600px" src="assets/screenshots/groups-blur.png" />
 </p>
 
-This repo houses a fork of Naxdy's fork of [niri](https://github.com/Naxdy/niri), a scrollable tiling Wayland compositor.
+This repo houses a fork of niri, a scrollable tiling Wayland compositor.
 
 This fork fixes the performance issues on a hardware which uses Intel GPU to output video and Nvidia GPU to render, so most of the laptops with hybrid graphics.
 
+Brings blur behind windows (Naxdy's implementation https://github.com/Naxdy/niri)
+
 Improves always-center-single-column option to center any number of columns as long as they take less than a full screen width. 
-https://www.youtube.com/watch?v=DDytn7EgzjY
+- preview: https://www.youtube.com/watch?v=DDytn7EgzjY
 
 Implements release and modifier only keybinds (pull request: https://github.com/YaLTeR/niri/pull/2456)
 Example:
@@ -27,4 +29,48 @@ Mod+W { toggle-column-tabbed-display; }
 ```
 
 This readme outlines the differences between this fork and upstream niri. For more info on upstream's version, check out
-the [original readme](./README_orig.md).
+the original repository: https://github.com/YaLTeR/niri.
+
+For maximum feature set, create a config file: .config/niri/unofficial.kdl and include it in your config.kdl:
+```
+layout {
+  always-center-single-column
+
+  blur {
+    on
+    noise 0.1
+    passes 2
+    radius 5
+  }
+}
+
+window-rule {
+  blur {
+    on
+  }
+}
+
+binds {
+  Mod release=true { spawn "dms" "ipc" "spotlight" "toggle"; }
+
+  Mod+G {
+    toggle-group
+  }
+  Mod+Tab {
+    focus-next-window
+  }
+  Mod+Shift+H {
+    move-window-into-or-out-of-group "left"
+  }
+  Mod+Shift+L {
+    move-window-into-or-out-of-group "right"
+  }
+  Mod+Shift+K {
+    move-window-into-or-out-of-group "up"
+  }
+  Mod+Shift+J {
+    move-window-into-or-out-of-group "down"
+  }
+}
+
+```
