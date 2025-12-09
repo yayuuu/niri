@@ -291,6 +291,12 @@ pub trait LayoutElement {
     fn title(&self) -> Option<String> {
         None
     }
+
+    fn set_kde_wants_blur(&mut self, _new_blurred: bool) {}
+
+    fn wants_blur(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug)]

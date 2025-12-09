@@ -74,7 +74,7 @@ use smithay::{
 
 pub use crate::handlers::xdg_shell::KdeDecorationsModeState;
 use crate::layout::workspace::WorkspaceId;
-use crate::layout::ActivateWindow;
+use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{DndIcon, NewClient, State};
 use crate::protocols::ext_workspace::{self, ExtWorkspaceHandler, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{
@@ -840,7 +840,7 @@ impl OrgKdeKwinBlurManagerHandler for State {
 
     fn enable_blur(&mut self, surface: &WlSurface) {
         if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(surface) {
-            mapped.set_blurred(true);
+            mapped.set_kde_wants_blur(true);
             self.niri.queue_redraw_all();
         } else if let Some(layer) = self
             .niri
@@ -856,7 +856,7 @@ impl OrgKdeKwinBlurManagerHandler for State {
 
     fn disable_blur(&mut self, surface: &WlSurface) {
         if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(surface) {
-            mapped.set_blurred(false);
+            mapped.set_kde_wants_blur(false);
             self.niri.queue_redraw_all();
         } else if let Some(layer) = self
             .niri

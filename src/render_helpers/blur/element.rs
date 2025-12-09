@@ -116,10 +116,8 @@ impl Blur {
         self.inner.set(None);
     }
 
-    pub fn update_render_elements(&mut self, activate: bool) {
-        if activate {
-            self.config.on = true;
-        }
+    pub fn update_render_elements(&mut self, is_active: bool) {
+        self.config.on = is_active;
     }
 
     // TODO: separate some of this logic out to [`Blur::update_render_elements`]

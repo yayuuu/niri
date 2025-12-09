@@ -186,6 +186,9 @@ pub struct Mapped {
 
     /// Most recent monotonic time when the window had the focus.
     focus_timestamp: Option<Duration>,
+
+    /// Whether this window wants blur as specified by the KDE blur protocol.
+    kde_wants_blur: bool,
 }
 
 niri_render_elements! {
@@ -283,6 +286,7 @@ impl Mapped {
             is_pending_maximized: false,
             uncommitted_maximized: Vec::new(),
             focus_timestamp: None,
+            kde_wants_blur: false,
         };
 
         rv.is_maximized = rv.sizing_mode().is_maximized();
@@ -572,13 +576,6 @@ impl Mapped {
 
     pub fn is_urgent(&self) -> bool {
         self.is_urgent
-    }
-
-    /// Set the preferred blurred state of this window.
-    pub fn set_blurred(&mut self, new_blurred: bool) {
-        if !self.rules.blur.off {
-            self.rules.blur.on = new_blurred;
-        }
     }
 }
 
@@ -1378,5 +1375,14 @@ impl LayoutElement for Mapped {
 
     fn title(&self) -> Option<String> {
         with_toplevel_role(self.toplevel(), |role| role.title.clone())
+    }
+    ///
+    /// Set the preferred blurred state of this window.
+    fn set_kde_wants_blur(&mut self, new_blurred: bool) {
+        self.kde_wants_blur = new_blurred;
+    }
+
+    fn wants_blur(&self) -> bool {
+        !self.rules.blur.off && (self.rules.blur.on || self.kde_wants_blur)
     }
 }
