@@ -68,22 +68,22 @@ layer-rule {
 binds {
   Mod release=true { spawn "dms" "ipc" "spotlight" "toggle"; }
 
-  Mod+G {
+  Alt+G {
     toggle-group
   }
-  Mod+Tab {
+  Alt+Shift_L release=true {
     focus-next-window
   }
-  Mod+Shift+H {
-    move-window-into-or-out-of-group "left"
-  }
-  Mod+Shift+L {
-    move-window-into-or-out-of-group "right"
-  }
-  Mod+Shift+K {
+  //Mod+Shift+H {
+  //  move-window-into-or-out-of-group "left"
+  //}
+  //Mod+Shift+L {
+  //  move-window-into-or-out-of-group "right"
+  //}
+  Alt+Shift+Up {
     move-window-into-or-out-of-group "up"
   }
-  Mod+Shift+J {
+  Alt+Shift+Down {
     move-window-into-or-out-of-group "down"
   }
 }
