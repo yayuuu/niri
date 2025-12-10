@@ -6,20 +6,22 @@ the original repository: https://github.com/YaLTeR/niri.
 
 ## Performance
 This fork fixes the performance issues with native wayland apps and PROTON_USE_WAYLAND=1 on a hardware which uses Intel GPU to output video and Nvidia GPU to render, so most of the laptops with hybrid graphics.
-![Mój obraz](assets/screenshots/perf.jpg)
+![Performance](assets/screenshots/perf.jpg)
 <br><br>
 
 ## Blur behind windows and window groups
 Brings blur behind windows and window groups (Naxdy's implementation https://github.com/Naxdy/niri)
-![Mój obraz](assets/screenshots/groups-blur.png)
+![Blur](assets/screenshots/groups-blur.png)
 <br><br>
 
 ## Center multiple columns
 Improves always-center-single-column option to center any number of columns as long as they take less than a full screen width. Especially useful on ultrawide screens.
-<iframe width="735" height="315" src="https://www.youtube.com/embed/DDytn7EgzjY?si=hGFhjJITkqgCxaer" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
-<br><br><br>
 
-## Release and modifier only keybonds
+Video preview:
+[![Center columns](https://img.youtube.com/vi/DDytn7EgzjY/0.jpg)](https://www.youtube.com/watch?v=DDytn7EgzjY)
+<br><br>
+
+## Release and modifier only keybinds
 Merges a working implementation of release keybinds (https://github.com/YaLTeR/niri/pull/2456), so you can run app launcher by only pressing Super key. Allows muting microphone in push-to-talk like way, and many more. 
 
 Example:
@@ -30,10 +32,10 @@ KP_Insert release=true allow-invalidation=false  { spawn-sh "wpctl set-mute @DEF
 ```
 <br>
 
-## Backwards compatible
+## Backward compatibility
 This fork works with standard niri config out of the box. You can also create separate config file that features only changes available in this fork and include it in config.kdl, so any time you decide to return to upstream niri, just comment out the include.
 
-For the maximum feature set, create a config file: .config/niri/unofficial.kdl and include it in your config.kdl:
+For the maximum feature set, create a config file: `.config/niri/unofficial.kdl` and include it in your config.kdl:
 ```
 layout {
   always-center-single-column
