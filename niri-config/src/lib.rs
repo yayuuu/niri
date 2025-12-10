@@ -1278,6 +1278,15 @@ mod tests {
                     noise: FloatOrInt(
                         0.0,
                     ),
+                    brightness: FloatOrInt(
+                        1.0,
+                    ),
+                    contrast: FloatOrInt(
+                        1.0,
+                    ),
+                    saturation: FloatOrInt(
+                        1.0,
+                    ),
                     ignore_alpha: FloatOrInt(
                         0.0,
                     ),
@@ -1766,6 +1775,9 @@ mod tests {
                         passes: None,
                         radius: None,
                         noise: None,
+                        brightness: None,
+                        contrast: None,
+                        saturation: None,
                         ignore_alpha: None,
                         x_ray: None,
                     },
@@ -1851,6 +1863,9 @@ mod tests {
                         passes: None,
                         radius: None,
                         noise: None,
+                        brightness: None,
+                        contrast: None,
+                        saturation: None,
                         ignore_alpha: None,
                         x_ray: None,
                     },
