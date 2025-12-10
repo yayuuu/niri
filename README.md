@@ -57,6 +57,14 @@ window-rule {
   }
 }
 
+layer-rule {
+  match namespace="dms:bar"
+  blur {
+    on
+    noise 0.0
+  }
+}
+
 binds {
   Mod release=true { spawn "dms" "ipc" "spotlight" "toggle"; }
 
