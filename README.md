@@ -54,88 +54,31 @@ layout {
 window-rule {
   blur {
     on
-
-    // instead of using `geometry-corner-radius`, you can also
-    // define an alpha value here; anything that is more transparent than this
-    // value will not be blurred.
-    //
-    // note that this will require rendering the blurred surface twice, so if possible,
-    // prefer using `geometry-corner-radius` instead, for performance reasons.
-    ignore-alpha 0.45
-
-    // will render "x-ray" blur that is only based on `bottom` and `background` layer surfaces,
-    // even if the window is floating. good for minimal GPU load.
-    x-ray true
-  }
-}
-```
-
-> [!NOTE]
->
-> Blur has to be enabled on a per-window or per-layer basis, i.e. setting `layout { blur { on } }` does nothing.
-
-This fork also partially implements the [KDE blur](https://wayland.app/protocols/kde-blur) protocol, meaning that
-certain KDE apps such as plasmashell or krunner are capable of blurring themselves natively, given that you've defined
-nonzero `radius` and `passes` for blur elsewhere in your config. This doesn't require you to set `blur { on }` in your
-window / layer rules, but having `blur { off }` will disable this behavior entirely.
-
-However, this fork lacks the ability to more granularly define blur region, which will likely result in oversized blur.
-To mitigate this, it is recommended to set `ignore-alpha` in your config. Below you'll find a config for sensible blur
-defaults:
-
-```kdl
-layout {
-  blur {
-    // removes banding and gives it a "glassy" look
-    noise 0.04
-    passes 4
-    radius 12
   }
 }
 
 layer-rule {
   match namespace="dms:bar"
   blur {
-    ignore-alpha 0.8
-    // use optimized blur for layer surfaces by default, to reduce GPU load
-    x-ray true
+    on
+    noise 0.0
   }
 }
-```
 
-#### Caveats
-
-- True blur currently only works for horizontal monitor configurations. When using any sort of 90 or 270 degree
-  transformations, only x-ray blur will be available.
-- True blur may exhibit some artifacts when rendered above a particularly active surface (e.g. a video player), due to
-  the way its performance optimizations are handled. This will be addressed in the future.
-- True blur will incur a significant performance cost when rendered behind a window that updates frequently, e.g.
-  because it's being moved / resized often.
-- Blur is currently only possible to be enabled through the config outside of KDE apps. Implementing the
-  [background effect](https://wayland.app/protocols/ext-background-effect-v1) protocol is planned though.
-
-### Window Groups (Tabbed Tiles)
-
-Tiles can be turned into grouped tiles via the `toggle-group` action. Other windows can then be moved into our out of a
-group via the `move-window-into-or-out-of-group` action, that accepts a directional parameter. Tabs can be cycled via
-the `focus-next-window` and `focus-previous-window` actions. Example config:
-
-```kdl
 binds {
   Mod release=true { spawn "dms" "ipc" "spotlight" "toggle"; }
-
   Alt+G {
     toggle-group
   }
   Alt+Shift_L release=true {
-    focus-next-window
+    focus-next-window;
   }
-  //Mod+Shift+H {
-  //  move-window-into-or-out-of-group "left"
-  //}
-  //Mod+Shift+L {
-  //  move-window-into-or-out-of-group "right"
-  //}
+//  Alt+Shift+Left {
+//    move-window-into-or-out-of-group "left"
+//  }
+//  Alt+Shift+Right {
+//    move-window-into-or-out-of-group "right"
+//  }
   Alt+Shift+Up {
     move-window-into-or-out-of-group "up"
   }
@@ -143,7 +86,6 @@ binds {
     move-window-into-or-out-of-group "down"
   }
 }
-
 ```
 <br>
 
