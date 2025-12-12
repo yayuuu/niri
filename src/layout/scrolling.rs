@@ -2194,6 +2194,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     self.activate_window(&to_activate);
                 }
             }
+            if matches!(
+                direction,
+                WindowMoveDirection::Left | WindowMoveDirection::Right
+            ) {
+                self.clamp_view_right_edge_if_overflowing();
+            }
             return;
         }
 
@@ -2313,6 +2319,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             self.update_window(&id, None);
             self.activate_window(&id);
         }
+
+        if matches!(
+            direction,
+            WindowMoveDirection::Left | WindowMoveDirection::Right
+        ) {
+            self.clamp_view_right_edge_if_overflowing();
+        }
     }
 
     pub fn consume_or_expel_window_left(&mut self, window: Option<&W::Id>) {
@@ -2421,6 +2434,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             offset += prev_off - new_col.tile_offset(0);
             new_col.tiles[0].animate_move_from(offset);
         }
+
+        self.clamp_view_right_edge_if_overflowing();
     }
 
     pub fn consume_or_expel_window_right(&mut self, window: Option<&W::Id>) {
@@ -2513,6 +2528,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             offset += prev_off - new_col.tile_offset(0);
             new_col.tiles[0].animate_move_from(offset);
         }
+
+        self.clamp_view_right_edge_if_overflowing();
     }
 
     pub fn consume_into_column(&mut self) {
