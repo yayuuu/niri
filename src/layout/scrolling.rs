@@ -628,6 +628,61 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         Some(widths + gaps * gap_count)
     }
 
+    fn view_area_for_alignment(&self) -> Rectangle<f64, Logical> {
+        if let Some(col) = self.columns.get(self.active_column_idx) {
+            let mode = col.sizing_mode();
+            if mode.is_fullscreen() {
+                return Rectangle::new(Point::default(), self.view_size);
+            }
+
+            if mode.is_maximized() {
+                return self.parent_area;
+            }
+        }
+
+        self.working_area
+    }
+
+    fn clamp_view_right_edge_if_overflowing(&mut self) {
+        if self.columns.is_empty() {
+            return;
+        }
+
+        let Some(layout_width) = self.layout_width_with_gaps() else {
+            return;
+        };
+
+        let area = self.view_area_for_alignment();
+        let right_padding = match self
+            .columns
+            .get(self.active_column_idx)
+            .map(Column::sizing_mode)
+        {
+            Some(mode) if mode.is_fullscreen() || mode.is_maximized() => 0.,
+            _ => self.options.layout.gaps,
+        };
+
+        let available_width = area.size.w - right_padding;
+
+        // Only adjust when the layout actually overflows the available width.
+        if layout_width <= available_width {
+            return;
+        }
+
+        let viewable_width = area.loc.x + area.size.w;
+        let view_left = self.target_view_pos();
+        let view_right = view_left + viewable_width - right_padding;
+        let pixel = 1. / self.scale;
+
+        if view_right <= layout_width + pixel {
+            return;
+        }
+
+        let new_view_left = layout_width - (viewable_width - right_padding);
+        let new_view_offset = new_view_left - self.column_x(self.active_column_idx);
+        self.animate_view_offset(self.active_column_idx, new_view_offset);
+    }
+
     fn center_entire_layout_target(&self, idx: usize) -> Option<CenteringTarget> {
         if !self.options.layout.always_center_single_column || self.columns.is_empty() {
             return None;
@@ -662,11 +717,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         })
     }
 
-    fn centering_target(
-        &self,
-        target_x: Option<f64>,
-        idx: usize,
-    ) -> Option<CenteringTarget> {
+    fn centering_target(&self, target_x: Option<f64>, idx: usize) -> Option<CenteringTarget> {
         if self.columns.is_empty() {
             return None;
         }
@@ -1074,12 +1125,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let column = &self.columns[self.active_column_idx];
-        Some(self.remove_tile_by_idx(
+        let removed = self.remove_tile_by_idx(
             self.active_column_idx,
             column.active_tile_idx,
             transaction,
             None,
-        ))
+        );
+
+        self.clamp_view_right_edge_if_overflowing();
+
+        Some(removed)
     }
 
     pub fn remove_tile(&mut self, window: &W::Id, transaction: Transaction) -> RemovedTile<W> {
@@ -1091,7 +1146,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let column = &self.columns[column_idx];
 
         let tile_idx = column.position(window).unwrap();
-        self.remove_tile_by_idx(column_idx, tile_idx, transaction, None)
+        let removed = self.remove_tile_by_idx(column_idx, tile_idx, transaction, None);
+
+        self.clamp_view_right_edge_if_overflowing();
+
+        removed
     }
 
     pub fn remove_tile_by_idx(
@@ -1195,7 +1254,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return None;
         }
 
-        Some(self.remove_column_by_idx(self.active_column_idx, None))
+        let removed = self.remove_column_by_idx(self.active_column_idx, None);
+        self.clamp_view_right_edge_if_overflowing();
+
+        Some(removed)
     }
 
     pub fn remove_column_by_idx(

@@ -2783,9 +2783,7 @@ fn surface_dmabuf_feedback(
         primary_or_overlay_scanout_formats.len() - primary_scanout_formats.len(),
     );
 
-    let scanout = builder
-        .clone()
-        .build()?;
+    let scanout = builder.clone().build()?;
 
     // If this is the primary node surface, send scanout formats in both tranches to avoid
     // duplication.
