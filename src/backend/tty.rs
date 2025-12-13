@@ -226,7 +226,7 @@ impl OutputDevice {
         info.name.clone()
     }
 
-    fn cleanup_disconnected_resources(
+    fn cleanup_mismatching_resources(
         &self,
         should_be_off: &dyn Fn(crtc::Handle, &connector::Info) -> bool,
     ) -> anyhow::Result<()> {
@@ -250,7 +250,29 @@ impl OutputDevice {
         for (conn, info) in self.drm_scanner.connectors() {
             // We only keep the connector if it has a CRTC and the output isn't off in niri.
             if let Some(crtc) = self.drm_scanner.crtc_for_connector(conn) {
-                if !should_be_off(crtc, info) {
+                // Verify that the connector's current CRTC matches the CRTC we expect. If not,
+                // clear the CRTC and the connector so that all connectors can get the expected
+                // CRTCs afterwards. (We do this because we do not handle CRTC rotations across TTY
+                // switches.)
+                let mut has_different_crtc = false;
+                if let Some(enc) = info.current_encoder() {
+                    match self.drm.get_encoder(enc) {
+                        Ok(enc) => {
+                            if let Some(current_crtc) = enc.crtc() {
+                                if current_crtc != crtc {
+                                    has_different_crtc = true;
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            debug!("couldn't get encoder: {err:?}");
+                            // Err on the safe side.
+                            has_different_crtc = true;
+                        }
+                    }
+                }
+
+                if !has_different_crtc && !should_be_off(crtc, info) {
                     // Keep the corresponding CRTC.
                     cleanup.remove(&crtc);
                     continue;
@@ -538,7 +560,7 @@ impl Tty {
                     return;
                 }
 
-                self.device_changed(device_id, niri)
+                self.device_changed(device_id, niri, false)
             }
             UdevEvent::Removed { device_id } => {
                 if !self.session.is_active() {
@@ -625,7 +647,7 @@ impl Tty {
 
                     // It hasn't been removed, update its state as usual.
                     let device = self.devices.get_mut(&node).unwrap();
-                    if let Err(err) = device.drm.activate(true) {
+                    if let Err(err) = device.drm.activate(false) {
                         warn!("error activating DRM device: {err:?}");
                     }
                     if let Some(lease_state) = &mut device.drm_lease_state {
@@ -633,7 +655,7 @@ impl Tty {
                     }
 
                     // Refresh the connectors.
-                    self.device_changed(node.dev_id(), niri);
+                    self.device_changed(node.dev_id(), niri, true);
 
                     // Apply pending gamma changes and restore our existing gamma.
                     let device = self.devices.get_mut(&node).unwrap();
@@ -878,12 +900,12 @@ impl Tty {
         };
         assert!(self.devices.insert(node, device).is_none());
 
-        self.device_changed(device_id, niri);
+        self.device_changed(device_id, niri, true);
 
         Ok(())
     }
 
-    fn device_changed(&mut self, device_id: dev_t, niri: &mut Niri) {
+    fn device_changed(&mut self, device_id: dev_t, niri: &mut Niri, cleanup: bool) {
         debug!("device changed: {device_id}");
 
         let Ok(node) = DrmNode::from_dev_id(device_id) else {
@@ -914,10 +936,6 @@ impl Tty {
 
             return;
         };
-
-        // If the DrmScanner connectors is empty here, then this will be the very first scan after
-        // the device had just been added.
-        let just_created = device.drm_scanner.connectors().is_empty();
 
         // DrmScanner will preserve any existing connector-CRTC mapping.
         let scan_result = match device.drm_scanner.scan_connectors(&device.drm) {
@@ -1003,8 +1021,9 @@ impl Tty {
             device.known_crtcs.insert(crtc, info);
         }
 
-        // If the device was just added, we need to cleanup any disconnected connectors and planes.
-        if just_created {
+        // If the device was just added or resumed, we need to cleanup any disconnected connectors
+        // and planes.
+        if cleanup {
             let device = self.devices.get(&node).unwrap();
 
             // Follow the logic in on_output_config_changed().
@@ -1026,8 +1045,18 @@ impl Tty {
                 config.off || should_disable(&output_name.connector)
             };
 
-            if let Err(err) = device.cleanup_disconnected_resources(&should_be_off) {
+            if let Err(err) = device.cleanup_mismatching_resources(&should_be_off) {
                 warn!("error cleaning up connectors: {err:?}");
+            }
+
+            let device = self.devices.get_mut(&node).unwrap();
+            for surface in device.surfaces.values_mut() {
+                // We aren't force-clearing the CRTCs, so we need to make the surfaces read the
+                // updated state after a session resume. This also causes a full damage for the
+                // next redraw.
+                if let Err(err) = surface.compositor.reset_state() {
+                    warn!("error resetting DrmCompositor state: {err:?}");
+                }
             }
         }
 
