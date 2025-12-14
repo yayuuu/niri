@@ -1261,7 +1261,7 @@ impl Tty {
             if !niri.config.borrow().debug.keep_max_bpc_unchanged {
                 // We only use 8888 RGB formats, so set max bpc to 8 to allow more types of links to
                 // run.
-                match set_max_bpc(&props, 8) {
+                match set_max_bpc(&props, 10) {
                     Ok(_bpc) => (),
                     Err(err) => debug!("couldn't set max bpc: {err:?}"),
                 }
