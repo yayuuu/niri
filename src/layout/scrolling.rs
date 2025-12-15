@@ -670,11 +670,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let available_width = area.size.w - right_padding;
 
-        debug!(
-            layout_width,
-            available_width, "clamping view to avoid empty space on the right"
-        );
-
         // Only adjust when the layout actually overflows the available width.
         if layout_width <= available_width {
             return;
@@ -693,6 +688,23 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let new_view_left = layout_without_outer_gaps - (viewable_width - right_padding);
         let new_view_offset = new_view_left - self.column_x(self.active_column_idx);
         self.animate_view_offset(self.active_column_idx, new_view_offset);
+    }
+
+    fn recenter_layout_if_needed(&mut self) {
+        if self.columns.is_empty()
+            || self.active_column_idx >= self.columns.len()
+            || !self.options.layout.always_center_single_column
+            || self.view_offset.is_gesture()
+        {
+            return;
+        }
+
+        if let Some(target) = self.center_entire_layout_target(self.active_column_idx) {
+            let pixel = 1. / self.scale;
+            if (self.view_offset.target() - target.view_offset).abs() > pixel {
+                self.animate_view_offset(self.active_column_idx, target.view_offset);
+            }
+        }
     }
 
     fn center_entire_layout_target(&self, idx: usize) -> Option<CenteringTarget> {
@@ -1259,6 +1271,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         }
 
+        self.recenter_layout_if_needed();
+
         tile
     }
 
@@ -1314,6 +1328,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         if column_idx == self.active_column_idx {
             self.view_offset_to_restore = None;
         }
+
+        self.recenter_layout_if_needed();
 
         if self.columns.is_empty() {
             return column;
