@@ -25,6 +25,7 @@ use crate::render_helpers::RenderTarget;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 use crate::utils::ResizeEdge;
 use crate::window::ResolvedWindowRules;
+use tracing::debug;
 
 /// Amount of touchpad movement to scroll the view for the width of one working area.
 const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.;
@@ -626,7 +627,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let gaps = self.options.layout.gaps;
-        let gap_count = self.columns.len().saturating_sub(1) as f64;
+        let gap_count = (self.columns.len() + 1) as f64;
         let widths: f64 = self.data.iter().map(|data| data.width).sum();
 
         Some(widths + gaps * gap_count)
@@ -656,6 +657,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         };
 
+        let gaps = self.options.layout.gaps;
         let area = self.view_area_for_alignment();
         let right_padding = match self
             .columns
@@ -668,11 +670,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let available_width = area.size.w - right_padding;
 
+        debug!(
+            layout_width,
+            available_width, "clamping view to avoid empty space on the right"
+        );
+
         // Only adjust when the layout actually overflows the available width.
         if layout_width <= available_width {
             return;
         }
 
+        let layout_without_outer_gaps = layout_width - gaps * 2.;
         let viewable_width = area.loc.x + area.size.w;
         let view_left = self.target_view_pos();
         let view_right = view_left + viewable_width - right_padding;
@@ -682,7 +690,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let new_view_left = layout_width - (viewable_width - right_padding);
+        let new_view_left = layout_without_outer_gaps - (viewable_width - right_padding);
         let new_view_offset = new_view_left - self.column_x(self.active_column_idx);
         self.animate_view_offset(self.active_column_idx, new_view_offset);
     }
@@ -693,6 +701,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         let layout_width = self.layout_width_with_gaps()?;
+        let gaps = self.options.layout.gaps;
+        let layout_without_outer_gaps = layout_width - gaps * 2.;
 
         let mode = self.columns[idx].sizing_mode();
         if mode.is_fullscreen() {
@@ -706,12 +716,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         };
 
         // Small margin to avoid rounding errors flipping the condition at exact fit.
-        let safety_margin = 0.5;
-        if layout_width + safety_margin >= area.size.w {
+        if layout_without_outer_gaps >= area.size.w {
             return None;
         }
 
-        let free_space = area.size.w - layout_width;
+        let free_space = area.size.w - layout_without_outer_gaps;
         let view_pos = self.column_x(0) - free_space / 2. - area.loc.x;
         let active_col_x = self.column_x(idx);
 
