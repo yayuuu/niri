@@ -92,9 +92,6 @@ pub struct ScrollingSpace<W: LayoutElement> {
 
     /// Configurable properties of the layout.
     options: Rc<Options>,
-
-    /// Whether to clamp view overflow after the next window update.
-    clamp_after_window_update: bool,
 }
 
 niri_render_elements! {
@@ -309,7 +306,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             scale,
             clock,
             options,
-            clamp_after_window_update: false,
         }
     }
 
@@ -1539,11 +1535,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // resizing windows not look janky.
                 self.animate_view_offset_to_column_with_config(None, col_idx, None, config);
             }
-        }
-
-        if self.clamp_after_window_update {
-            self.clamp_after_window_update = false;
-            self.clamp_view_right_edge_if_overflowing();
         }
     }
 
@@ -3145,8 +3136,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         col.toggle_width(None, forwards);
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
-
-        self.clamp_after_window_update = true;
     }
 
     pub fn toggle_full_width(&mut self) {
@@ -3183,9 +3172,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
 
-        if matches!(change, SizeChange::AdjustProportion(delta) if delta < 0.) {
-            self.clamp_after_window_update = true;
-        }
+        // Clamping is handled when the view offset is recomputed after the width change.
     }
 
     pub fn set_window_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
@@ -3258,8 +3245,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         col.toggle_width(tile_idx, forwards);
 
         cancel_resize_for_column(&mut self.interactive_resize, col);
-
-        self.clamp_after_window_update = true;
     }
 
     pub fn toggle_window_height(&mut self, window: Option<&W::Id>, forwards: bool) {
@@ -3439,8 +3424,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // With place_within_column, the tab indicator changes the column size immediately.
         self.data[col_idx].update(col);
-
-        self.clamp_after_window_update = true;
 
         true
     }
