@@ -25,7 +25,6 @@ use crate::render_helpers::RenderTarget;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 use crate::utils::ResizeEdge;
 use crate::window::ResolvedWindowRules;
-use tracing::debug;
 
 /// Amount of touchpad movement to scroll the view for the width of one working area.
 const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.;
@@ -1144,6 +1143,26 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 col.animate_move_from_with_config(offset, config);
             }
         }
+
+        self.align_layout_left_if_overflowing_after_growth();
+    }
+
+    pub(super) fn align_layout_left_if_overflowing_after_growth(&mut self) {
+        if !self.options.layout.always_center_single_column {
+            return;
+        }
+
+        if let Some(layout_width) = self.layout_width_with_gaps() {
+            let area = self.view_area_for_alignment();
+            let pixel = 1. / self.scale;
+            if layout_width > area.size.w + pixel {
+                // Layout no longer fits: align viewport origin to the left edge of the current
+                // alignment area (stop centering), leaving the outer gap.
+                let new_view_offset =
+                    area.loc.x - self.options.layout.gaps - self.column_x(self.active_column_idx);
+                self.animate_view_offset(self.active_column_idx, new_view_offset);
+            }
+        }
     }
 
     pub fn remove_active_tile(&mut self, transaction: Transaction) -> Option<RemovedTile<W>> {
@@ -1378,6 +1397,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn update_window(&mut self, window: &W::Id, serial: Option<Serial>) {
+        let prev_layout_width = self.layout_width_with_gaps();
+
         let Some((col_idx, column)) = self
             .columns
             .iter_mut()
@@ -1534,6 +1555,21 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // FIXME: we will want to skip the animation in some cases here to make continuously
                 // resizing windows not look janky.
                 self.animate_view_offset_to_column_with_config(None, col_idx, None, config);
+            }
+        }
+
+        // If the column (or layout) grew past the view width as a result of the window update
+        // (e.g. after moving from a monitor with a narrower working area), ensure we stop
+        // centering and align left. Allow scrolling when it already overflowed before.
+        if self.options.layout.always_center_single_column {
+            if let (Some(prev), Some(now)) = (prev_layout_width, self.layout_width_with_gaps()) {
+                let area = self.view_area_for_alignment();
+                let pixel = 1. / self.scale;
+                let was_fitting = prev <= area.size.w + pixel;
+                let now_overflows = now > area.size.w + pixel;
+                if was_fitting && now_overflows {
+                    self.align_layout_left_if_overflowing_after_growth();
+                }
             }
         }
     }
