@@ -138,6 +138,7 @@ pub struct OutputDevice {
     render_node: Option<DrmNode>,
     drm_scanner: DrmScanner,
     surfaces: HashMap<crtc::Handle, Surface>,
+    powered_down_surfaces: HashMap<crtc::Handle, Surface>,
     known_crtcs: HashMap<crtc::Handle, CrtcInfo>,
     // SAFETY: drop after all the objects used with them are dropped.
     // See https://github.com/Smithay/smithay/issues/1102.
@@ -196,6 +197,22 @@ impl OutputDevice {
 
     pub fn remove_lease(&mut self, lease_id: u32) {
         self.active_leases.retain(|l| l.id() != lease_id);
+    }
+
+    fn has_surface_for(&self, crtc: &crtc::Handle) -> bool {
+        self.surfaces.contains_key(crtc) || self.powered_down_surfaces.contains_key(crtc)
+    }
+
+    fn surface_for_crtc(&self, crtc: &crtc::Handle) -> Option<&Surface> {
+        self.surfaces
+            .get(crtc)
+            .or_else(|| self.powered_down_surfaces.get(crtc))
+    }
+
+    fn all_surfaces_mut(&mut self) -> impl Iterator<Item = (&crtc::Handle, &mut Surface)> {
+        self.surfaces
+            .iter_mut()
+            .chain(self.powered_down_surfaces.iter_mut())
     }
 
     pub fn known_crtc_name(
@@ -661,10 +678,12 @@ impl Tty {
 
                     // Apply pending gamma changes and restore our existing gamma.
                     let device = self.devices.get_mut(&node).unwrap();
-                    for (crtc, surface) in device.surfaces.iter_mut() {
-                        if let Ok(props) =
-                            ConnectorProperties::try_new(&device.drm, surface.connector)
-                        {
+                    let drm = &device.drm as *const DrmDevice;
+                    let mut surfaces = mem::take(&mut device.surfaces);
+                    let mut powered = mem::take(&mut device.powered_down_surfaces);
+                    for (crtc, surface) in surfaces.iter_mut().chain(powered.iter_mut()) {
+                        let drm = unsafe { &*drm };
+                        if let Ok(props) = ConnectorProperties::try_new(drm, surface.connector) {
                             match reset_hdr(&props) {
                                 Ok(()) => (),
                                 Err(err) => debug!("couldn't reset HDR properties: {err:?}"),
@@ -676,19 +695,21 @@ impl Tty {
                         if let Some(ramp) = surface.pending_gamma_change.take() {
                             let ramp = ramp.as_deref();
                             let res = if let Some(gamma_props) = &mut surface.gamma_props {
-                                gamma_props.set_gamma(&device.drm, ramp)
+                                gamma_props.set_gamma(drm, ramp)
                             } else {
-                                set_gamma_for_crtc(&device.drm, *crtc, ramp)
+                                set_gamma_for_crtc(drm, *crtc, ramp)
                             };
                             if let Err(err) = res {
                                 warn!("error applying pending gamma change: {err:?}");
                             }
                         } else if let Some(gamma_props) = &surface.gamma_props {
-                            if let Err(err) = gamma_props.restore_gamma(&device.drm) {
+                            if let Err(err) = gamma_props.restore_gamma(drm) {
                                 warn!("error restoring gamma: {err:?}");
                             }
                         }
                     }
+                    device.surfaces = surfaces;
+                    device.powered_down_surfaces = powered;
                 }
 
                 // Add new devices.
@@ -840,12 +861,15 @@ impl Tty {
 
             // Update the dmabuf feedbacks for all surfaces.
             for (node, device) in self.devices.iter_mut() {
-                for surface in device.surfaces.values_mut() {
+                let render_node = device.render_node;
+                let mut surfaces = mem::take(&mut device.surfaces);
+                let mut powered = mem::take(&mut device.powered_down_surfaces);
+                for (_crtc, surface) in surfaces.iter_mut().chain(powered.iter_mut()) {
                     match surface_dmabuf_feedback(
                         &surface.compositor,
                         primary_formats.clone(),
                         self.primary_render_node,
-                        device.render_node,
+                        render_node,
                         *node,
                     ) {
                         Ok(feedback) => {
@@ -856,6 +880,8 @@ impl Tty {
                         }
                     }
                 }
+                device.surfaces = surfaces;
+                device.powered_down_surfaces = powered;
             }
         }
 
@@ -895,6 +921,7 @@ impl Tty {
             allocator,
             drm_scanner: DrmScanner::new(),
             surfaces: HashMap::new(),
+            powered_down_surfaces: HashMap::new(),
             known_crtcs: HashMap::new(),
             drm_lease_state,
             active_leases: Vec::new(),
@@ -1052,7 +1079,7 @@ impl Tty {
             }
 
             let device = self.devices.get_mut(&node).unwrap();
-            for surface in device.surfaces.values_mut() {
+            for (_crtc, surface) in device.all_surfaces_mut() {
                 // We aren't force-clearing the CRTCs, so we need to make the surfaces read the
                 // updated state after a session resume. This also causes a full damage for the
                 // next redraw.
@@ -1143,7 +1170,7 @@ impl Tty {
 
                     // Clear the dmabuf feedbacks for all surfaces.
                     for device in self.devices.values_mut() {
-                        for surface in device.surfaces.values_mut() {
+                        for (_crtc, surface) in device.all_surfaces_mut() {
                             surface.dmabuf_feedback = None;
                         }
                     }
@@ -1184,6 +1211,15 @@ impl Tty {
         connector: connector::Info,
         crtc: crtc::Handle,
     ) -> anyhow::Result<()> {
+        if let Some(device) = self.devices.get_mut(&node) {
+            if device.surfaces.contains_key(&crtc)
+                || device.powered_down_surfaces.contains_key(&crtc)
+            {
+                debug!("connector already has a surface for crtc {crtc:?}, skipping reconnect");
+                return Ok(());
+            }
+        }
+
         let connector_name = format_connector_name(&connector);
         debug!("connecting connector: {connector_name}");
 
@@ -1526,7 +1562,11 @@ impl Tty {
             return;
         };
 
-        let Some(surface) = device.surfaces.remove(&crtc) else {
+        let Some(surface) = device
+            .surfaces
+            .remove(&crtc)
+            .or_else(|| device.powered_down_surfaces.remove(&crtc))
+        else {
             debug!("disconnecting connector for crtc: {crtc:?}");
 
             if let Some((conn, _)) = device
@@ -1584,7 +1624,11 @@ impl Tty {
         };
 
         let Some(surface) = device.surfaces.get_mut(&crtc) else {
-            error!("missing surface in vblank callback for crtc {crtc:?}");
+            if device.powered_down_surfaces.contains_key(&crtc) {
+                trace!("vblank for powered off crtc {crtc:?}, skipping");
+            } else {
+                error!("missing surface in vblank callback for crtc {crtc:?}");
+            }
             return;
         };
 
@@ -1819,7 +1863,11 @@ impl Tty {
         };
 
         let Some(surface) = device.surfaces.get_mut(&tty_state.crtc) else {
-            error!("missing surface");
+            if device.powered_down_surfaces.contains_key(&tty_state.crtc) {
+                trace!("skipping render for powered off output");
+            } else {
+                error!("missing surface");
+            }
             return rv;
         };
 
@@ -1978,7 +2026,7 @@ impl Tty {
         self.debug_tint = !self.debug_tint;
 
         for device in self.devices.values_mut() {
-            for surface in device.surfaces.values_mut() {
+            for (_crtc, surface) in device.all_surfaces_mut() {
                 let compositor = &mut surface.compositor;
 
                 let mut flags = compositor.debug_flags();
@@ -2028,7 +2076,7 @@ impl Tty {
             .get(&tty_state.node)
             .context("missing device")?;
 
-        let surface = device.surfaces.get(&crtc).context("missing surface")?;
+        let surface = device.surface_for_crtc(&crtc).context("missing surface")?;
         if let Some(gamma_props) = &surface.gamma_props {
             gamma_props.gamma_size(&device.drm)
         } else {
@@ -2048,7 +2096,12 @@ impl Tty {
             .devices
             .get_mut(&tty_state.node)
             .context("missing device")?;
-        let surface = device.surfaces.get_mut(&crtc).context("missing surface")?;
+        let Some(surface) = device.surfaces.get_mut(&crtc) else {
+            if device.powered_down_surfaces.contains_key(&crtc) {
+                bail!("output is powered off");
+            }
+            bail!("missing surface");
+        };
 
         // Cannot change properties while the device is inactive.
         if !self.session.is_active() {
@@ -2076,7 +2129,7 @@ impl Tty {
                 let physical_size = connector.size();
                 let output_name = device.known_crtc_name(&crtc, connector, disable_monitor_names);
 
-                let surface = device.surfaces.get(&crtc);
+                let surface = device.surface_for_crtc(&crtc);
                 let current_crtc_mode = surface.map(|surface| surface.compositor.pending_mode());
                 let mut current_mode = None;
                 let mut is_custom_mode = false;
@@ -2196,7 +2249,12 @@ impl Tty {
         // This variant removes and re-adds outputs like a config toggle, but without touching config.
         if active {
             self.outputs_suspended = false;
-            // Re-scan connectors and reconnect surfaces as needed.
+            // Power on all outputs we previously powered off.
+            let outputs: Vec<_> = niri.global_space.outputs().cloned().collect();
+            for output in outputs {
+                self.power_on_output(niri, &output);
+            }
+            // Re-scan connectors and reconnect surfaces as needed (handles hotplug while suspended).
             let nodes: Vec<_> = self.devices.keys().copied().collect();
             for node in nodes {
                 let dev_id = node.dev_id();
@@ -2207,16 +2265,73 @@ impl Tty {
 
         self.outputs_suspended = true;
 
-        // Disconnect all current surfaces, mimicking `config off`.
-        let nodes: Vec<_> = self.devices.keys().copied().collect();
-        for node in nodes {
-            if let Some(device) = self.devices.get_mut(&node) {
-                let crtcs: Vec<_> = device.surfaces.keys().copied().collect();
-                let _ = device;
-                for crtc in crtcs {
-                    self.connector_disconnected(niri, node, crtc);
-                }
-            }
+        // Power off all current outputs without removing them from niri.
+        let outputs: Vec<_> = niri.global_space.outputs().cloned().collect();
+        for output in outputs {
+            self.power_off_output(niri, &output);
+        }
+    }
+
+    pub fn power_off_output(&mut self, niri: &mut Niri, output: &Output) {
+        let tty_state = output.user_data().get::<TtyOutputState>().unwrap();
+        let Some(device) = self.devices.get_mut(&tty_state.node) else {
+            error!("missing device for output {}", output.name());
+            return;
+        };
+
+        if device.powered_down_surfaces.contains_key(&tty_state.crtc) {
+            trace!("output {} already powered off", output.name());
+            return;
+        }
+
+        let Some(mut surface) = device.surfaces.remove(&tty_state.crtc) else {
+            debug!(
+                "no active surface to power off for output {}",
+                output.name()
+            );
+            return;
+        };
+
+        debug!("powering off connector: {:?}", surface.name.connector);
+        if let Err(err) = surface.compositor.clear() {
+            warn!("error clearing drm surface: {err:?}");
+        }
+
+        device.powered_down_surfaces.insert(tty_state.crtc, surface);
+
+        if let Some(state) = niri.output_state.get_mut(output) {
+            state.redraw_state = RedrawState::Idle;
+        }
+    }
+
+    pub fn power_on_output(&mut self, niri: &mut Niri, output: &Output) {
+        let tty_state = output.user_data().get::<TtyOutputState>().unwrap();
+        let Some(device) = self.devices.get_mut(&tty_state.node) else {
+            error!("missing device for output {}", output.name());
+            return;
+        };
+
+        if device.surfaces.contains_key(&tty_state.crtc) {
+            trace!("output {} already powered on", output.name());
+            return;
+        }
+
+        let Some(surface) = device.powered_down_surfaces.remove(&tty_state.crtc) else {
+            debug!(
+                "no powered off surface to restore for output {}",
+                output.name()
+            );
+            return;
+        };
+
+        debug!("powering on connector: {:?}", surface.name.connector);
+
+        if let Some(_old) = device.surfaces.insert(tty_state.crtc, surface) {
+            warn!("surface unexpectedly present when powering on");
+        }
+
+        if niri.monitors_active {
+            niri.queue_redraw(output);
         }
     }
 
@@ -2228,8 +2343,11 @@ impl Tty {
         if output_state.frame_clock.vrr() == enable_vrr {
             return;
         }
-        for (&node, device) in self.devices.iter_mut() {
-            for (&crtc, surface) in device.surfaces.iter_mut() {
+        let mut refresh_ipc = false;
+        'outer: for (&node, device) in self.devices.iter_mut() {
+            let mut surfaces = mem::take(&mut device.surfaces);
+            let mut powered = mem::take(&mut device.powered_down_surfaces);
+            for (&crtc, surface) in surfaces.iter_mut().chain(powered.iter_mut()) {
                 let tty_state: &TtyOutputState = output.user_data().get().unwrap();
                 if tty_state.node == node && tty_state.crtc == crtc {
                     let word = if enable_vrr { "enabling" } else { "disabling" };
@@ -2243,10 +2361,18 @@ impl Tty {
                         .frame_clock
                         .set_vrr(surface.compositor.vrr_enabled());
 
-                    self.refresh_ipc_outputs(niri);
-                    return;
+                    refresh_ipc = true;
+                    device.surfaces = surfaces;
+                    device.powered_down_surfaces = powered;
+                    break 'outer;
                 }
             }
+            device.surfaces = surfaces;
+            device.powered_down_surfaces = powered;
+        }
+
+        if refresh_ipc {
+            self.refresh_ipc_outputs(niri);
         }
     }
 
@@ -2345,7 +2471,11 @@ impl Tty {
         let mut to_connect = vec![];
 
         for (&node, device) in &mut self.devices {
-            for (&crtc, surface) in device.surfaces.iter_mut() {
+            let scanner = &device.drm_scanner as *const DrmScanner;
+            let render_node = device.render_node.unwrap_or(self.primary_render_node);
+            let mut surfaces = mem::take(&mut device.surfaces);
+            let mut powered = mem::take(&mut device.powered_down_surfaces);
+            for (&crtc, surface) in surfaces.iter_mut().chain(powered.iter_mut()) {
                 let config = self
                     .config
                     .borrow()
@@ -2359,7 +2489,7 @@ impl Tty {
                 }
 
                 // Check if we need to change the mode.
-                let Some(connector) = device.drm_scanner.connectors().get(&surface.connector)
+                let Some(connector) = unsafe { &*scanner }.connectors().get(&surface.connector)
                 else {
                     error!("missing enabled connector in drm_scanner");
                     continue;
@@ -2467,7 +2597,6 @@ impl Tty {
                         surface.compositor.vrr_enabled(),
                     );
                     niri.output_resized(&output);
-                    let render_node = device.render_node.unwrap_or(self.primary_render_node);
                     let renderer = self.gpu_manager.single_renderer(&render_node);
                     match renderer {
                         Ok(mut renderer) => {
@@ -2496,7 +2625,7 @@ impl Tty {
                 }
 
                 // Check if already enabled.
-                if device.surfaces.contains_key(&crtc)
+                if device.has_surface_for(&crtc)
                     || device
                         .non_desktop_connectors
                         .contains(&(connector.handle(), crtc))
@@ -2516,6 +2645,8 @@ impl Tty {
                     to_connect.push((node, connector.clone(), crtc, output_name));
                 }
             }
+            device.surfaces = surfaces;
+            device.powered_down_surfaces = powered;
         }
 
         for (node, crtc) in to_disconnect {
@@ -2549,7 +2680,7 @@ impl Tty {
                 }
 
                 // Check if already enabled.
-                if device.surfaces.contains_key(&crtc)
+                if device.has_surface_for(&crtc)
                     || device
                         .non_desktop_connectors
                         .contains(&(connector.handle(), crtc))
