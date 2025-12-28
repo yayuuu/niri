@@ -362,10 +362,11 @@ impl TabIndicator {
         &self,
         renderer: &mut R,
         pos: Point<f64, Logical>,
-    ) -> impl Iterator<Item = TabIndicatorRenderElement> + '_ {
+        push: &mut dyn FnMut(TabIndicatorRenderElement),
+    ) {
         let has_border_shader = BorderRenderElement::has_shader(renderer);
         if !has_border_shader {
-            return None.into_iter().flatten();
+            return;
         }
 
         let titles = (!self.config.hide_titles).then(|| {
@@ -421,7 +422,9 @@ impl TabIndicator {
             .map(TabIndicatorRenderElement::from)
             .chain(titles.into_iter().flatten());
 
-        Some(rv).into_iter().flatten()
+        for elem in rv {
+            push(elem);
+        }
     }
 
     /// Extra size occupied by the tab indicator.

@@ -1,5 +1,6 @@
 use glam::{Mat3, Vec2};
 use niri_config::CornerRadius;
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::gles::{
     ffi, GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
@@ -8,8 +9,8 @@ use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions}
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
 
 use super::damage::ExtraDamage;
-use super::renderer::AsGlesFrame as _;
-use super::shaders::mat3_uniform;
+use super::renderer::{AsGlesFrame as _, NiriRenderer};
+use super::shaders::{mat3_uniform, Shaders};
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
 
 #[derive(Debug)]
@@ -35,6 +36,32 @@ impl<E> ClippedSurfaceRenderElement<E>
 where
     E: Element,
 {
+    pub fn shader<R: NiriRenderer>(renderer: &mut R) -> Option<&GlesTexProgram> {
+        Shaders::get(renderer).clipped_surface.as_ref()
+    }
+
+    pub fn from_wayland<R: NiriRenderer>(
+        elem: WaylandSurfaceRenderElement<R>,
+        scale: Scale<f64>,
+        geometry: Rectangle<f64, Logical>,
+        program: GlesTexProgram,
+        corner_radius: CornerRadius,
+    ) -> ClippedSurfaceRenderElement<WaylandSurfaceRenderElement<R>> {
+        let view_src = elem.view().src;
+        let buf_size = elem.buffer_size();
+        ClippedSurfaceRenderElement::new(
+            elem,
+            view_src,
+            buf_size,
+            scale,
+            geometry,
+            program,
+            corner_radius,
+            None,
+            0.,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         elem: E,
@@ -99,6 +126,10 @@ where
             uniforms,
             alpha_tex,
         }
+    }
+
+    fn compute_uniforms(&self) -> Vec<Uniform<'static>> {
+        self.uniforms.clone()
     }
 
     pub fn will_clip(
@@ -241,7 +272,7 @@ where
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
-        frame.override_default_tex_program(self.program.clone(), self.uniforms.clone());
+        frame.override_default_tex_program(self.program.clone(), self.compute_uniforms());
 
         if let Some(alpha_tex) = &self.alpha_tex {
             frame.with_context(|gl| unsafe {
@@ -278,7 +309,7 @@ where
     ) -> Result<(), TtyRendererError<'render>> {
         frame
             .as_gles_frame()
-            .override_default_tex_program(self.program.clone(), self.uniforms.clone());
+            .override_default_tex_program(self.program.clone(), self.compute_uniforms());
 
         if let Some(alpha_tex) = &self.alpha_tex {
             frame.as_gles_frame().with_context(|gl| unsafe {

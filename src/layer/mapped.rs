@@ -1,9 +1,7 @@
 use niri_config::utils::MergeWith as _;
 use niri_config::{Config, LayerRule};
 use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::element::surface::{
-    render_elements_from_surface_tree, WaylandSurfaceRenderElement,
-};
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::desktop::{LayerSurface, PopupManager};
@@ -20,7 +18,8 @@ use crate::render_helpers::clipped_surface::ClippedSurfaceRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::shadow::ShadowRenderElement;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
-use crate::render_helpers::{render_to_texture, RenderTarget, SplitElements};
+use crate::render_helpers::surface::push_elements_from_surface_tree;
+use crate::render_helpers::{render_to_texture, RenderTarget};
 use crate::utils::{baba_is_float_offset, round_logical_in_physical};
 
 #[derive(Debug)]
@@ -185,123 +184,106 @@ impl MappedLayer {
         Point::from((0., y))
     }
 
-    pub fn render<R: NiriRenderer>(
+    pub fn render_normal<R: NiriRenderer>(
         &self,
         renderer: &mut R,
         location: Point<f64, Logical>,
         target: RenderTarget,
+        push: &mut dyn FnMut(LayerSurfaceRenderElement<R>),
         fx_buffers: Option<EffectsFramebuffersUserData>,
-    ) -> SplitElements<LayerSurfaceRenderElement<R>> {
-        let mut rv = SplitElements::default();
-
+    ) {
         let scale = Scale::from(self.scale);
         let alpha = self.rules.opacity.unwrap_or(1.).clamp(0., 1.);
         let location = location + self.bob_offset();
 
+        let mut elems: Vec<LayerSurfaceRenderElement<R>> = Vec::new();
+
         // Normal surface elements used to render a texture for the ignore alpha pass inside the
         // blur shader.
-        let mut gles_elems: Option<Vec<LayerSurfaceRenderElement<GlesRenderer>>> = None;
         let ignore_alpha = self.rules.blur.ignore_alpha.unwrap_or_default().0;
+        let mut gles_elems: Option<Vec<LayerSurfaceRenderElement<GlesRenderer>>> = None;
         let mut update_alpha_tex = ignore_alpha > 0.;
 
         if target.should_block_out(self.rules.block_out_from) {
-            // Round to physical pixels.
             let location = location.to_physical_precise_round(scale).to_logical(scale);
-
-            // FIXME: take geometry-corner-radius into account.
             let elem = SolidColorRenderElement::from_buffer(
                 &self.block_out_buffer,
                 location,
                 alpha,
                 Kind::Unspecified,
             );
-            rv.normal.push(elem.into());
+            elems.push(elem.into());
         } else {
-            // Layer surfaces don't have extra geometry like windows.
             let buf_pos = location;
-
             let surface = self.surface.wl_surface();
-            for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
-                // Layer surfaces don't have extra geometry like windows.
-                let offset = popup_offset - popup.geometry().loc;
-
-                rv.popups.extend(render_elements_from_surface_tree(
-                    renderer,
-                    popup.wl_surface(),
-                    (buf_pos + offset.to_f64()).to_physical_precise_round(scale),
-                    scale,
-                    alpha,
-                    Kind::ScanoutCandidate,
-                ));
-            }
-
-            rv.normal = render_elements_from_surface_tree(
+            push_elements_from_surface_tree(
                 renderer,
                 surface,
                 buf_pos.to_physical_precise_round(scale),
                 scale,
                 alpha,
                 Kind::ScanoutCandidate,
+                &mut |elem| elems.push(elem.into()),
             );
 
-            // If there's been an update to our render elements, we need to render them again for
-            // our blur ignore alpha pass.
             if ignore_alpha > 0.
                 && self
                     .blur
-                    .maybe_update_commit_tracker(CommitTracker::from_elements(rv.normal.iter()))
+                    .maybe_update_commit_tracker(CommitTracker::from_elements(elems.iter()))
             {
-                gles_elems = Some(render_elements_from_surface_tree(
+                let mut gles = Vec::new();
+                push_elements_from_surface_tree(
                     renderer.as_gles_renderer(),
                     surface,
                     buf_pos.to_physical_precise_round(scale),
                     scale,
                     alpha,
                     Kind::ScanoutCandidate,
-                ));
+                    &mut |elem| gles.push(elem.into()),
+                );
+                gles_elems = Some(gles);
             } else {
                 update_alpha_tex = false;
             }
-        };
+        }
 
         let blur_elem = (matches!(self.surface.layer(), Layer::Top | Layer::Overlay)
             && !target.should_block_out(self.rules.block_out_from))
-        .then(|| {
-            let fx_buffers = fx_buffers?;
+            .then(|| {
+                let fx_buffers = fx_buffers?;
 
-            // TODO: respect sync point?
-            let alpha_tex = gles_elems
-                .and_then(|gles_elems| {
-                    let fx_buffers = fx_buffers.borrow();
+                let alpha_tex = gles_elems
+                    .and_then(|gles_elems| {
+                        let fx_buffers = fx_buffers.borrow();
 
-                    let transform = fx_buffers.transform();
+                        let transform = fx_buffers.transform();
 
-                    render_to_texture(
-                        renderer.as_gles_renderer(),
-                        transform.transform_size(fx_buffers.output_size()),
-                        self.scale.into(),
-                        Transform::Normal,
-                        Fourcc::Abgr8888,
-                        gles_elems.into_iter(),
-                    )
-                    .inspect_err(|e| warn!("failed to render alpha tex for layer surface: {e:?}"))
-                    .ok()
-                })
-                .map(|r| r.0);
+                        render_to_texture(
+                            renderer.as_gles_renderer(),
+                            transform.transform_size(fx_buffers.output_size()),
+                            self.scale.into(),
+                            Transform::Normal,
+                            Fourcc::Abgr8888,
+                            gles_elems.into_iter(),
+                        )
+                        .inspect_err(|e| {
+                            warn!("failed to render alpha tex for layer surface: {e:?}")
+                        })
+                        .ok()
+                    })
+                    .map(|r| r.0);
 
-            if update_alpha_tex {
-                if let Some(alpha_tex) = alpha_tex {
-                    self.blur.set_alpha_tex(alpha_tex);
-                } else {
-                    self.blur.clear_alpha_tex();
+                if update_alpha_tex {
+                    if let Some(alpha_tex) = alpha_tex {
+                        self.blur.set_alpha_tex(alpha_tex);
+                    } else {
+                        self.blur.clear_alpha_tex();
+                    }
                 }
-            }
 
-            let blur_sample_area = Rectangle::new(location, self.size).to_i32_round();
+                let blur_sample_area = Rectangle::new(location, self.size).to_i32_round();
+                let geo = Rectangle::new(location, blur_sample_area.size.to_f64());
 
-            let geo = Rectangle::new(location, blur_sample_area.size.to_f64());
-
-            Some(
                 self.blur
                     .render(
                         renderer.as_gles_renderer(),
@@ -314,22 +296,56 @@ impl MappedLayer {
                         blur_sample_area.loc.to_f64(),
                         None,
                     )
-                    .map(Into::into),
-            )
-        })
-        .flatten()
-        .flatten()
-        .into_iter();
+                    .map(Into::into)
+            })
+            .flatten()
+            .into_iter();
 
         let location = location.to_physical_precise_round(scale).to_logical(scale);
-        rv.normal
-            .extend(self.shadow.render(renderer, location).map(Into::into));
+        self.shadow
+            .render(renderer, location, &mut |elem| elems.push(elem.into()));
+        elems.extend(blur_elem);
 
-        rv.normal.extend(blur_elem);
-
-        rv
+        for elem in elems {
+            push(elem);
+        }
     }
 
+    pub fn render_popups<R: NiriRenderer>(
+        &self,
+        renderer: &mut R,
+        location: Point<f64, Logical>,
+        target: RenderTarget,
+        push: &mut dyn FnMut(LayerSurfaceRenderElement<R>),
+    ) {
+        let scale = Scale::from(self.scale);
+        let alpha = self.rules.opacity.unwrap_or(1.).clamp(0., 1.);
+        let location = location + self.bob_offset();
+
+        if target.should_block_out(self.rules.block_out_from) {
+            return;
+        }
+
+        // Layer surfaces don't have extra geometry like windows.
+        let buf_pos = location;
+
+        let surface = self.surface.wl_surface();
+        for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
+            // Layer surfaces don't have extra geometry like windows.
+            let offset = popup_offset - popup.geometry().loc;
+
+            push_elements_from_surface_tree(
+                renderer,
+                popup.wl_surface(),
+                (buf_pos + offset.to_f64()).to_physical_precise_round(scale),
+                scale,
+                alpha,
+                Kind::ScanoutCandidate,
+                &mut |elem| push(elem.into()),
+            );
+        }
+    }
+    
     pub fn set_blurred(&mut self, new_blurred: bool) {
         if !self.rules.blur.off {
             self.rules.blur.on = new_blurred;
