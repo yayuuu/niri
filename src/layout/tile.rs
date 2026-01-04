@@ -1878,7 +1878,8 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         if let Some(fx_buffers) = fx_buffers {
-            let force_optimized_blur = self.are_animations_ongoing();
+            let force_optimized_blur =
+                self.are_animations_ongoing() && !self.focused_window().is_floating();
             if let Some(elem) = self.blur.render(
                 renderer.as_gles_renderer(),
                 fx_buffers.clone(),
