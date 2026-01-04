@@ -1878,6 +1878,7 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         if let Some(fx_buffers) = fx_buffers {
+            let force_optimized_blur = self.resize_animation.is_some();
             if let Some(elem) = self.blur.render(
                 renderer.as_gles_renderer(),
                 fx_buffers.clone(),
@@ -1885,6 +1886,7 @@ impl<W: LayoutElement> Tile<W> {
                 radius,
                 self.scale,
                 animated_geo,
+                force_optimized_blur,
                 self.focused_window().is_floating()
                     && !self.focused_window().rules().blur.x_ray.unwrap_or_default(),
                 window_render_loc,

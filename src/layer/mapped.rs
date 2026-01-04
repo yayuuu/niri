@@ -290,6 +290,7 @@ impl MappedLayer {
                     self.rules.geometry_corner_radius.unwrap_or_default(),
                     self.scale,
                     geo,
+                    false,
                     !self.rules.blur.x_ray.unwrap_or_default(),
                     blur_sample_area.loc.to_f64(),
                     None,

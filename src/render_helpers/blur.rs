@@ -207,13 +207,29 @@ impl EffectsFramebuffers {
         // first render layer shell elements
         // NOTE: We use Blur::DISABLED since we should not include blur with Background/Bottom
         // layer shells
-
+        // Include Top as well so widgets/bars under windows end up in the cached texture.
         let mut elements = vec![];
-        for layer in layer_map
-            .layers_on(Layer::Background)
-            .chain(layer_map.layers_on(Layer::Bottom))
-            .rev()
-        {
+        for layer in layer_map.layers_on(Layer::Background).rev() {
+            let layer_geo = layer_map.layer_geometry(layer).unwrap();
+            let location = layer_geo.loc.to_physical_precise_round(scale);
+            elements.extend(
+                layer.render_elements::<WaylandSurfaceRenderElement<_>>(
+                    renderer, location, scale, 1.0,
+                ),
+            );
+        }
+
+        for layer in layer_map.layers_on(Layer::Bottom).rev() {
+            let layer_geo = layer_map.layer_geometry(layer).unwrap();
+            let location = layer_geo.loc.to_physical_precise_round(scale);
+            elements.extend(
+                layer.render_elements::<WaylandSurfaceRenderElement<_>>(
+                    renderer, location, scale, 1.0,
+                ),
+            );
+        }
+
+        for layer in layer_map.layers_on(Layer::Top).rev() {
             let layer_geo = layer_map.layer_geometry(layer).unwrap();
             let location = layer_geo.loc.to_physical_precise_round(scale);
             elements.extend(

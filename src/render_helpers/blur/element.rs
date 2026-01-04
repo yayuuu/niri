@@ -130,6 +130,7 @@ impl Blur {
         corner_radius: CornerRadius,
         scale: f64,
         geometry: Rectangle<f64, Logical>,
+        force_optimized: bool,
         mut true_blur: bool,
         render_loc: Point<f64, Logical>,
         overview_zoom: Option<f64>,
@@ -138,7 +139,11 @@ impl Blur {
             return None;
         }
 
-        true_blur |= !self.config.optimized;
+        if force_optimized {
+            true_blur = false;
+        } else {
+            true_blur |= !self.config.optimized;
+        }
 
         // FIXME: true blur is broken on 90/270 transformed monitors
         if !matches!(
