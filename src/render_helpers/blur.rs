@@ -196,13 +196,11 @@ impl EffectsFramebuffers {
         scale: Scale<f64>,
         config: Blur,
     ) -> anyhow::Result<()> {
-        if self.optimized_blur_rerender_at.is_none()
-            || matches!(self.optimized_blur_rerender_at, Some(t) if t > Instant::now())
-        {
+        if matches!(self.optimized_blur_rerender_at, Some(t) if t > Instant::now()) {
             return Ok(());
         }
 
-        self.optimized_blur_rerender_at = None;
+        self.optimized_blur_rerender_at = get_rerender_at(None);
 
         // first render layer shell elements
         // NOTE: We use Blur::DISABLED since we should not include blur with Background/Bottom
