@@ -48,12 +48,18 @@ layout {
     noise 0.1
     passes 2
     radius 5
+
+    // FPS at which true blur is rendered
+    fps 10
   }
 }
 
 window-rule {
   blur {
     on
+    // Uncomment if you use desktop widgets and want to see them through transparent windows
+    // This option will use more resources
+    // optimized false
   }
 }
 
@@ -62,6 +68,7 @@ layer-rule {
   blur {
     on
     noise 0.0
+    ignore-alpha 0.45
   }
 }
 

@@ -1161,9 +1161,15 @@ impl<W: LayoutElement> FloatingSpace<W> {
             // For the active tile, draw the focus ring.
             let focus_ring = focus_ring && Some(tile.focused_window().id()) == active.as_ref();
 
-            tile.render(renderer, tile_pos, focus_ring, target, &mut |elem| {
-                push(elem.into())
-            }, fx_buffers.clone(), Some(overview_zoom));
+            tile.render(
+                renderer,
+                tile_pos,
+                focus_ring,
+                target,
+                &mut |elem| push(elem.into()),
+                fx_buffers.clone(),
+                Some(overview_zoom),
+            );
         }
     }
 

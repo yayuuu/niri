@@ -42,6 +42,8 @@ impl ResolvedLayerRules {
                 passes: None,
                 radius: None,
                 noise: None,
+                fps: None,
+                optimized: None,
                 brightness: None,
                 contrast: None,
                 saturation: None,

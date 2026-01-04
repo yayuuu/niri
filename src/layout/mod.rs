@@ -4898,15 +4898,21 @@ impl<W: LayoutElement> Layout<W> {
         let zoom = self.overview_zoom();
         let location = move_.tile_render_location(zoom);
         let fx_buffers = EffectsFramebuffers::get_user_data(output);
-        move_
-            .tile
-            .render(renderer, location, true, target, &mut |elem| {
+        move_.tile.render(
+            renderer,
+            location,
+            true,
+            target,
+            &mut |elem| {
                 push(RescaleRenderElement::from_element(
                     elem,
                     location.to_physical_precise_round(scale),
                     zoom,
                 ));
-            }, fx_buffers, Some(zoom));
+            },
+            fx_buffers,
+            Some(zoom),
+        );
     }
 
     pub fn refresh(&mut self, is_active: bool) {

@@ -31,6 +31,8 @@ use super::shaders::Shaders;
 use std::sync::MutexGuard;
 use std::time::{Duration, Instant};
 
+const DEFAULT_BLUR_RERENDER_INTERVAL: Duration = Duration::from_millis(150);
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum CurrentBuffer {
     /// We are currently sampling from normal buffer, and rendering in the swapped/alternative.
@@ -79,8 +81,13 @@ pub struct EffectsFramebuffers {
 
 pub type EffectsFramebuffersUserData = Rc<RefCell<EffectsFramebuffers>>;
 
-fn get_rerender_at() -> Option<Instant> {
-    Some(Instant::now() + Duration::from_millis(150))
+fn get_rerender_at(fps: Option<f32>) -> Option<Instant> {
+    let interval = fps
+        .filter(|fps| *fps > 0.)
+        .map(|fps| Duration::from_secs_f32(1. / fps))
+        .unwrap_or(DEFAULT_BLUR_RERENDER_INTERVAL);
+
+    Some(Instant::now() + interval)
 }
 
 impl EffectsFramebuffers {
@@ -103,7 +110,7 @@ impl EffectsFramebuffers {
         };
 
         if fx_buffers.optimized_blur_rerender_at.is_none() {
-            fx_buffers.optimized_blur_rerender_at = get_rerender_at();
+            fx_buffers.optimized_blur_rerender_at = get_rerender_at(None);
         }
     }
 
@@ -129,7 +136,7 @@ impl EffectsFramebuffers {
 
         let this = EffectsFramebuffers {
             optimized_blur: create_buffer(renderer, texture_size).unwrap(),
-            optimized_blur_rerender_at: get_rerender_at(),
+            optimized_blur_rerender_at: get_rerender_at(None),
             effects: create_buffer(renderer, texture_size).unwrap(),
             effects_swapped: create_buffer(renderer, texture_size).unwrap(),
             current_buffer: CurrentBuffer::Normal,
@@ -170,7 +177,7 @@ impl EffectsFramebuffers {
 
         *fx_buffers = EffectsFramebuffers {
             optimized_blur: create_buffer(renderer, texture_size)?,
-            optimized_blur_rerender_at: get_rerender_at(),
+            optimized_blur_rerender_at: get_rerender_at(None),
             effects: create_buffer(renderer, texture_size)?,
             effects_swapped: create_buffer(renderer, texture_size)?,
             current_buffer: CurrentBuffer::Normal,

@@ -344,6 +344,8 @@ pub struct Blur {
     pub passes: u32,
     pub radius: FloatOrInt<0, 1024>,
     pub noise: FloatOrInt<0, 1024>,
+    pub fps: FloatOrInt<1, 1000>,
+    pub optimized: bool,
     pub brightness: FloatOrInt<0, 2>,
     pub contrast: FloatOrInt<0, 1024>,
     pub saturation: FloatOrInt<0, 1024>,
@@ -358,6 +360,8 @@ impl Default for Blur {
             passes: 0,
             radius: FloatOrInt(0.0),
             noise: FloatOrInt(0.0),
+            fps: FloatOrInt(6.666_666_5),
+            optimized: true,
             brightness: FloatOrInt(1.0),
             contrast: FloatOrInt(1.0),
             saturation: FloatOrInt(1.0),
@@ -379,6 +383,8 @@ impl MergeWith<BlurRule> for Blur {
             passes,
             radius,
             noise,
+            fps,
+            optimized,
             brightness,
             contrast,
             saturation,
@@ -709,6 +715,10 @@ pub struct BlurRule {
     #[knuffel(child, unwrap(argument))]
     pub noise: Option<FloatOrInt<0, 1024>>,
     #[knuffel(child, unwrap(argument))]
+    pub fps: Option<FloatOrInt<1, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub optimized: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
     pub brightness: Option<FloatOrInt<0, 2>>,
     #[knuffel(child, unwrap(argument))]
     pub contrast: Option<FloatOrInt<0, 1024>>,
@@ -780,6 +790,7 @@ impl MergeWith<Self> for BlurRule {
             passes,
             radius,
             noise,
+            optimized,
             brightness,
             contrast,
             saturation,

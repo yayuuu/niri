@@ -377,6 +377,30 @@ layout {
 }
 ```
 
+### `blur`
+
+Blur behind windows that request it.
+Enable it with `on` and adjust the blur strength with `passes`, `radius` and `noise`.
+
+`optimized` is `true` by default and uses a shared blur texture for tiled windows (floating windows already render blur in real time).
+Set `optimized false` to force real-time blur for every window that uses this blur config, or override it per-window with a [`window-rule`](./Configuration:-Window-Rules.md).
+
+`fps` caps how often *true* blur (non-optimized) is re-rendered.
+The default matches the previous 150 ms timer (~6.7 fps).
+
+```kdl
+layout {
+    blur {
+        on
+        passes 2
+        radius 5
+        noise 0.1
+        optimized false
+        fps 30
+    }
+}
+```
+
 ### `shadow`
 
 <sup>Since: 25.02</sup>

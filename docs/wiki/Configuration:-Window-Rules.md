@@ -104,6 +104,16 @@ window-rule {
     max-width 200
     min-height 300
     max-height 300
+
+    // Blur options are the same as in layout.
+    // Setting optimized to false forces real-time blur for windows matching this rule.
+    blur {
+        on
+        passes 2
+        radius 5
+        optimized false
+        fps 30
+    }
 }
 ```
 

@@ -1159,7 +1159,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let pixel = 1. / self.scale;
             if layout_width > area.size.w + pixel {
                 let current_view_left = self.target_view_pos();
-                let desired_view_left = area.loc.x - self.options.layout.gaps;
+                let desired_view_left = -(area.loc.x + self.options.layout.gaps);
                 if current_view_left + pixel >= desired_view_left {
                     return;
                 }
@@ -5832,10 +5832,145 @@ fn resolve_preset_size(preset: PresetSize, options: &Options, view_size: f64) ->
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
     use niri_config::FloatOrInt;
+    use smithay::output::Output;
+    use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
     use super::*;
+    use crate::render_helpers::offscreen::OffscreenData;
     use crate::utils::round_logical_in_physical;
+
+    #[derive(Clone, Debug)]
+    struct TestWindow {
+        id: usize,
+        size: Cell<Size<i32, Logical>>,
+        requested: Cell<Option<Size<i32, Logical>>>,
+        pending_mode: Cell<SizingMode>,
+        mode: Cell<SizingMode>,
+        rules: ResolvedWindowRules,
+    }
+
+    impl TestWindow {
+        fn new(id: usize, size: Size<i32, Logical>) -> Self {
+            Self {
+                id,
+                size: Cell::new(size),
+                requested: Cell::new(None),
+                pending_mode: Cell::new(SizingMode::Normal),
+                mode: Cell::new(SizingMode::Normal),
+                rules: ResolvedWindowRules::default(),
+            }
+        }
+    }
+
+    impl LayoutElement for TestWindow {
+        type Id = usize;
+
+        fn id(&self) -> &Self::Id {
+            &self.id
+        }
+
+        fn size(&self) -> Size<i32, Logical> {
+            self.size.get()
+        }
+
+        fn buf_loc(&self) -> Point<i32, Logical> {
+            Point::default()
+        }
+
+        fn is_in_input_region(&self, _point: Point<f64, Logical>) -> bool {
+            true
+        }
+
+        fn request_size(
+            &mut self,
+            size: Size<i32, Logical>,
+            mode: SizingMode,
+            _animate: bool,
+            _transaction: Option<Transaction>,
+        ) {
+            self.requested.set(Some(size));
+            self.pending_mode.set(mode);
+            self.mode.set(mode);
+
+            if size.w != 0 && size.h != 0 {
+                self.size.set(size);
+            }
+        }
+
+        fn min_size(&self) -> Size<i32, Logical> {
+            Size::from((1, 1))
+        }
+
+        fn max_size(&self) -> Size<i32, Logical> {
+            Size::from((i32::MAX, i32::MAX))
+        }
+
+        fn is_wl_surface(&self, _wl_surface: &WlSurface) -> bool {
+            false
+        }
+
+        fn set_preferred_scale_transform(
+            &self,
+            _scale: smithay::output::Scale,
+            _transform: Transform,
+        ) {
+        }
+
+        fn has_ssd(&self) -> bool {
+            false
+        }
+
+        fn output_enter(&self, _output: &Output) {}
+
+        fn output_leave(&self, _output: &Output) {}
+
+        fn set_offscreen_data(&self, _data: Option<OffscreenData>) {}
+
+        fn set_activated(&mut self, _active: bool) {}
+
+        fn set_bounds(&self, _bounds: Size<i32, Logical>) {}
+
+        fn sizing_mode(&self) -> SizingMode {
+            self.mode.get()
+        }
+
+        fn pending_sizing_mode(&self) -> SizingMode {
+            self.pending_mode.get()
+        }
+
+        fn requested_size(&self) -> Option<Size<i32, Logical>> {
+            self.requested.get()
+        }
+
+        fn is_child_of(&self, _parent: &Self) -> bool {
+            false
+        }
+
+        fn rules(&self) -> &ResolvedWindowRules {
+            &self.rules
+        }
+
+        fn refresh(&self) {}
+
+        fn take_animation_snapshot(&mut self) -> Option<LayoutElementRenderSnapshot> {
+            None
+        }
+
+        fn set_interactive_resize(&mut self, _data: Option<InteractiveResizeData>) {}
+
+        fn cancel_interactive_resize(&mut self) {}
+
+        fn interactive_resize_data(&self) -> Option<InteractiveResizeData> {
+            None
+        }
+
+        fn on_commit(&mut self, _serial: Serial) {}
+    }
 
     #[test]
     fn working_area_starts_at_physical_pixel() {
@@ -5864,5 +5999,63 @@ mod tests {
 
         let parent_area = Rectangle::from_size(Size::from((1280., 720.)));
         compute_working_area(parent_area, 1., struts);
+    }
+
+    #[test]
+    fn align_left_after_growth_respects_left_strut() {
+        let mut layout = niri_config::Layout::default();
+        layout.always_center_single_column = true;
+        layout.gaps = 8.;
+        layout.struts.left = FloatOrInt(100.);
+
+        let options = Rc::new(Options {
+            layout,
+            ..Default::default()
+        });
+
+        let view_size = Size::from((1920., 1080.));
+        let parent_area = Rectangle::from_size(view_size);
+        let clock = Clock::with_time(Duration::ZERO);
+
+        let mut space =
+            ScrollingSpace::new(view_size, parent_area, 1., clock.clone(), options.clone());
+
+        let make_tile = |id| {
+            Tile::new(
+                TestWindow::new(id, Size::from((900, 600))),
+                view_size,
+                1.,
+                clock.clone(),
+                options.clone(),
+            )
+        };
+
+        space.add_tile(
+            None,
+            make_tile(1),
+            true,
+            ColumnWidth::Fixed(900.),
+            false,
+            None,
+        );
+        space.add_tile(
+            None,
+            make_tile(2),
+            false,
+            ColumnWidth::Fixed(900.),
+            false,
+            None,
+        );
+
+        space.data.iter_mut().for_each(|data| data.width = 1000.);
+        space.view_offset = ViewOffset::Static(-500.);
+
+        space.align_layout_left_if_overflowing_after_growth();
+
+        let expected_view_left = -(space.working_area.loc.x + space.options.layout.gaps);
+        assert!(
+            (space.target_view_pos() - expected_view_left).abs() < 1e-6,
+            "view should align to working area with gap when strut on the left",
+        );
     }
 }

@@ -1328,6 +1328,10 @@ mod tests {
                     noise: FloatOrInt(
                         0.0,
                     ),
+                    fps: FloatOrInt(
+                        6.666_666_5,
+                    ),
+                    optimized: true,
                     brightness: FloatOrInt(
                         1.0,
                     ),
@@ -1825,6 +1829,8 @@ mod tests {
                         passes: None,
                         radius: None,
                         noise: None,
+                        fps: None,
+                        optimized: None,
                         brightness: None,
                         contrast: None,
                         saturation: None,
@@ -1913,6 +1919,8 @@ mod tests {
                         passes: None,
                         radius: None,
                         noise: None,
+                        fps: None,
+                        optimized: None,
                         brightness: None,
                         contrast: None,
                         saturation: None,

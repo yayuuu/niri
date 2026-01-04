@@ -138,6 +138,8 @@ impl Blur {
             return None;
         }
 
+        true_blur |= !self.config.optimized;
+
         // FIXME: true blur is broken on 90/270 transformed monitors
         if !matches!(
             fx_buffers.borrow().transform(),
@@ -521,6 +523,10 @@ impl RenderElement<GlesRenderer> for BlurRenderElement {
 
                 // Update the blur buffers.
                 // We use gl ffi directly to circumvent some stuff done by smithay
+                if !config.optimized {
+                    rerender_at.set(None);
+                }
+
                 if rerender_at
                     .borrow()
                     .map(|r| r < Instant::now())
@@ -543,7 +549,11 @@ impl RenderElement<GlesRenderer> for BlurRenderElement {
                         )
                     })??;
 
-                    rerender_at.set(get_rerender_at());
+                    if config.optimized {
+                        rerender_at.set(get_rerender_at(Some(config.fps.0 as f32)));
+                    } else {
+                        rerender_at.set(None);
+                    }
                 };
 
                 gles_frame.render_texture_from_to(

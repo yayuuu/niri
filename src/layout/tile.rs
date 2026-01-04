@@ -1664,11 +1664,14 @@ impl<W: LayoutElement> Tile<W> {
         let animated_geo = Rectangle::new(window_render_loc, animated_window_size);
 
         // Popups go on top.
-        self.window
-            .focused_window()
-            .render_popups(renderer, window_render_loc, scale, win_alpha, target, &mut |elem| {
-                push(elem.into())
-            });
+        self.window.focused_window().render_popups(
+            renderer,
+            window_render_loc,
+            scale,
+            win_alpha,
+            target,
+            &mut |elem| push(elem.into()),
+        );
 
         let mut pushed_resize = false;
         if let Some(resize) = &self.resize_animation {
@@ -1766,9 +1769,8 @@ impl<W: LayoutElement> Tile<W> {
                     LayoutElementRenderElement::Wayland(elem) => {
                         if clip_to_geometry {
                             if let Some(shader) = clip_shader.clone() {
-                                if ClippedSurfaceRenderElement::will_clip(
-                                    &elem, scale, geo, radius,
-                                ) {
+                                if ClippedSurfaceRenderElement::will_clip(&elem, scale, geo, radius)
+                                {
                                     let view_src = elem.view().src;
                                     let buf_size = elem.buffer_size();
                                     push(

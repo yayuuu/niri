@@ -249,57 +249,55 @@ impl MappedLayer {
 
         let blur_elem = (matches!(self.surface.layer(), Layer::Top | Layer::Overlay)
             && !target.should_block_out(self.rules.block_out_from))
-            .then(|| {
-                let fx_buffers = fx_buffers?;
+        .then(|| {
+            let fx_buffers = fx_buffers?;
 
-                let alpha_tex = gles_elems
-                    .and_then(|gles_elems| {
-                        let fx_buffers = fx_buffers.borrow();
+            let alpha_tex = gles_elems
+                .and_then(|gles_elems| {
+                    let fx_buffers = fx_buffers.borrow();
 
-                        let transform = fx_buffers.transform();
+                    let transform = fx_buffers.transform();
 
-                        render_to_texture(
-                            renderer.as_gles_renderer(),
-                            transform.transform_size(fx_buffers.output_size()),
-                            self.scale.into(),
-                            Transform::Normal,
-                            Fourcc::Abgr8888,
-                            gles_elems.into_iter(),
-                        )
-                        .inspect_err(|e| {
-                            warn!("failed to render alpha tex for layer surface: {e:?}")
-                        })
-                        .ok()
-                    })
-                    .map(|r| r.0);
-
-                if update_alpha_tex {
-                    if let Some(alpha_tex) = alpha_tex {
-                        self.blur.set_alpha_tex(alpha_tex);
-                    } else {
-                        self.blur.clear_alpha_tex();
-                    }
-                }
-
-                let blur_sample_area = Rectangle::new(location, self.size).to_i32_round();
-                let geo = Rectangle::new(location, blur_sample_area.size.to_f64());
-
-                self.blur
-                    .render(
+                    render_to_texture(
                         renderer.as_gles_renderer(),
-                        fx_buffers,
-                        blur_sample_area,
-                        self.rules.geometry_corner_radius.unwrap_or_default(),
-                        self.scale,
-                        geo,
-                        !self.rules.blur.x_ray.unwrap_or_default(),
-                        blur_sample_area.loc.to_f64(),
-                        None,
+                        transform.transform_size(fx_buffers.output_size()),
+                        self.scale.into(),
+                        Transform::Normal,
+                        Fourcc::Abgr8888,
+                        gles_elems.into_iter(),
                     )
-                    .map(Into::into)
-            })
-            .flatten()
-            .into_iter();
+                    .inspect_err(|e| warn!("failed to render alpha tex for layer surface: {e:?}"))
+                    .ok()
+                })
+                .map(|r| r.0);
+
+            if update_alpha_tex {
+                if let Some(alpha_tex) = alpha_tex {
+                    self.blur.set_alpha_tex(alpha_tex);
+                } else {
+                    self.blur.clear_alpha_tex();
+                }
+            }
+
+            let blur_sample_area = Rectangle::new(location, self.size).to_i32_round();
+            let geo = Rectangle::new(location, blur_sample_area.size.to_f64());
+
+            self.blur
+                .render(
+                    renderer.as_gles_renderer(),
+                    fx_buffers,
+                    blur_sample_area,
+                    self.rules.geometry_corner_radius.unwrap_or_default(),
+                    self.scale,
+                    geo,
+                    !self.rules.blur.x_ray.unwrap_or_default(),
+                    blur_sample_area.loc.to_f64(),
+                    None,
+                )
+                .map(Into::into)
+        })
+        .flatten()
+        .into_iter();
 
         let location = location.to_physical_precise_round(scale).to_logical(scale);
         self.shadow
@@ -345,7 +343,7 @@ impl MappedLayer {
             );
         }
     }
-    
+
     pub fn set_blurred(&mut self, new_blurred: bool) {
         if !self.rules.blur.off {
             self.rules.blur.on = new_blurred;
