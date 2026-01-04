@@ -50,14 +50,14 @@ layout {
     radius 5
 
     // FPS at which true blur is rendered
-    fps 10
+    fps 15
   }
 }
 
 window-rule {
   blur {
     on
-    // Uncomment if you use desktop widgets and want to see them through transparent windows
+    // Uncomment if you use animated desktop widgets and want to see them through transparent windows
     // This option will use more resources
     // optimized false
   }
@@ -68,7 +68,9 @@ layer-rule {
   blur {
     on
     noise 0.0
-    ignore-alpha 0.45
+    // ignore-alpha uses a lot of the GPU horsepower, using it with x-ray blur greatly mitigates this issue
+    ignore-alpha 0.1
+    x-ray true
   }
 }
 
