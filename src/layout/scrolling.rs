@@ -3538,6 +3538,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     force_optimized_blur,
                     fx_buffers.clone(),
                     Some(overview_zoom),
+                    false,
                 );
             }
         }

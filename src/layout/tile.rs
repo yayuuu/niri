@@ -1610,6 +1610,7 @@ impl<W: LayoutElement> Tile<W> {
         force_optimized_blur_global: bool,
         fx_buffers: Option<EffectsFramebuffersUserData>,
         overview_zoom: Option<f64>,
+        overview_zoom_use_render_loc_center: bool,
     ) {
         let _span = tracy_client::span!("Tile::render_inner");
 
@@ -1882,6 +1883,11 @@ impl<W: LayoutElement> Tile<W> {
             let force_optimized_blur = (self.are_animations_ongoing()
                 || force_optimized_blur_global)
                 && !self.focused_window().is_floating();
+            let overview_zoom_center = if overview_zoom_use_render_loc_center {
+                Some(window_render_loc)
+            } else {
+                None
+            };
             if let Some(elem) = self.blur.render(
                 renderer.as_gles_renderer(),
                 fx_buffers.clone(),
@@ -1894,6 +1900,7 @@ impl<W: LayoutElement> Tile<W> {
                     && !self.focused_window().rules().blur.x_ray.unwrap_or_default(),
                 window_render_loc,
                 overview_zoom,
+                overview_zoom_center,
             ) {
                 push(elem.into());
             }
@@ -1915,6 +1922,7 @@ impl<W: LayoutElement> Tile<W> {
         force_optimized_blur_global: bool,
         fx_buffers: Option<EffectsFramebuffersUserData>,
         overview_zoom: Option<f64>,
+        overview_zoom_use_render_loc_center: bool,
     ) {
         let _span = tracy_client::span!("Tile::render");
 
@@ -1941,6 +1949,7 @@ impl<W: LayoutElement> Tile<W> {
                 force_optimized_blur_global,
                 fx_buffers.clone(),
                 overview_zoom,
+                overview_zoom_use_render_loc_center,
             );
             match open.render(
                 renderer,
@@ -1972,6 +1981,7 @@ impl<W: LayoutElement> Tile<W> {
                 force_optimized_blur_global,
                 fx_buffers.clone(),
                 overview_zoom,
+                overview_zoom_use_render_loc_center,
             );
             match alpha.offscreen.render(renderer, scale, &elements) {
                 Ok((elem, _sync, data)) => {
@@ -1999,6 +2009,7 @@ impl<W: LayoutElement> Tile<W> {
                 force_optimized_blur_global,
                 fx_buffers,
                 overview_zoom,
+                overview_zoom_use_render_loc_center,
             );
         }
     }
@@ -2023,6 +2034,7 @@ impl<W: LayoutElement> Tile<W> {
             false,
             None,
             None,
+            false,
         );
 
         // A bit of a hack to render blocked out as for screencast, but I think it's fine here.
@@ -2036,6 +2048,7 @@ impl<W: LayoutElement> Tile<W> {
             false,
             None,
             None,
+            false,
         );
 
         RenderSnapshot {

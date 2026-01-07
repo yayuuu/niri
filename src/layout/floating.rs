@@ -1171,6 +1171,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 force_optimized_blur,
                 fx_buffers.clone(),
                 Some(overview_zoom),
+                false,
             );
         }
     }

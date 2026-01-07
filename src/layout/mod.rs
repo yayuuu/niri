@@ -4896,6 +4896,11 @@ impl<W: LayoutElement> Layout<W> {
 
         let scale = Scale::from(move_.output.current_scale().fractional_scale());
         let zoom = self.overview_zoom();
+        let overview_zoom = if self.overview_progress.is_some() {
+            Some(zoom)
+        } else {
+            None
+        };
         let location = move_.tile_render_location(zoom);
         let fx_buffers = EffectsFramebuffers::get_user_data(output);
         move_.tile.render(
@@ -4912,7 +4917,8 @@ impl<W: LayoutElement> Layout<W> {
             },
             true,
             fx_buffers,
-            Some(zoom),
+            overview_zoom,
+            self.overview_progress.is_some(),
         );
     }
 

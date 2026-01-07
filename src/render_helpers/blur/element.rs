@@ -134,6 +134,7 @@ impl Blur {
         mut true_blur: bool,
         render_loc: Point<f64, Logical>,
         overview_zoom: Option<f64>,
+        overview_zoom_center: Option<Point<f64, Logical>>,
     ) -> Option<BlurRenderElement> {
         if !self.config.on || self.config.passes == 0 || self.config.radius.0 == 0. {
             return None;
@@ -160,8 +161,9 @@ impl Blur {
 
         let sample_area = if let (Some(zoom), true) = (overview_zoom, true_blur) {
             let mut sample_area = destination_area.to_f64().upscale(zoom);
-            let center =
-                (fx_buffers.borrow().output_size.to_f64().to_logical(scale) / 2.).to_point();
+            let center = overview_zoom_center.unwrap_or_else(|| {
+                (fx_buffers.borrow().output_size.to_f64().to_logical(scale) / 2.).to_point()
+            });
             sample_area.loc.x = center.x - (center.x - destination_area.loc.x as f64) * zoom;
             sample_area.loc.y = center.y - (center.y - destination_area.loc.y as f64) * zoom;
             sample_area.to_i32_round()
