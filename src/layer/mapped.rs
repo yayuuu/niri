@@ -256,11 +256,9 @@ impl MappedLayer {
                 .and_then(|gles_elems| {
                     let fx_buffers = fx_buffers.borrow();
 
-                    let transform = fx_buffers.transform();
-
                     render_to_texture(
                         renderer.as_gles_renderer(),
-                        transform.transform_size(fx_buffers.output_size()),
+                        fx_buffers.output_size(),
                         self.scale.into(),
                         Transform::Normal,
                         Fourcc::Abgr8888,
