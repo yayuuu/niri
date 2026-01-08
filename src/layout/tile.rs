@@ -23,7 +23,7 @@ use crate::layout::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabI
 use crate::layout::SizingMode;
 use crate::niri_render_elements;
 use crate::render_helpers::blur::element::{Blur, BlurRenderElement};
-use crate::render_helpers::blur::EffectsFramebuffersUserData;
+use crate::render_helpers::blur::{EffectsFramebuffersUserData, OverviewZoom};
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::clipped_surface::{ClippedSurfaceRenderElement, RoundedCornerDamage};
 use crate::render_helpers::damage::ExtraDamage;
@@ -1609,8 +1609,7 @@ impl<W: LayoutElement> Tile<W> {
         push: &mut dyn FnMut(TileRenderElement<R>),
         force_optimized_blur_global: bool,
         fx_buffers: Option<EffectsFramebuffersUserData>,
-        overview_zoom: Option<f64>,
-        overview_zoom_use_render_loc_center: bool,
+        overview: OverviewZoom,
     ) {
         let _span = tracy_client::span!("Tile::render_inner");
 
@@ -1883,11 +1882,10 @@ impl<W: LayoutElement> Tile<W> {
             let force_optimized_blur = (self.are_animations_ongoing()
                 || force_optimized_blur_global)
                 && !self.focused_window().is_floating();
-            let overview_zoom_center = if overview_zoom_use_render_loc_center {
-                Some(window_render_loc)
-            } else {
-                None
-            };
+            let mut overview = overview;
+            if overview.use_render_loc_center && overview.zoom.is_some() {
+                overview.center = Some(window_render_loc);
+            }
             if let Some(elem) = self.blur.render(
                 renderer.as_gles_renderer(),
                 fx_buffers.clone(),
@@ -1899,8 +1897,7 @@ impl<W: LayoutElement> Tile<W> {
                 self.focused_window().is_floating()
                     && !self.focused_window().rules().blur.x_ray.unwrap_or_default(),
                 window_render_loc,
-                overview_zoom,
-                overview_zoom_center,
+                overview,
             ) {
                 push(elem.into());
             }
@@ -1921,8 +1918,7 @@ impl<W: LayoutElement> Tile<W> {
         push: &mut dyn FnMut(TileRenderElement<R>),
         force_optimized_blur_global: bool,
         fx_buffers: Option<EffectsFramebuffersUserData>,
-        overview_zoom: Option<f64>,
-        overview_zoom_use_render_loc_center: bool,
+        overview: OverviewZoom,
     ) {
         let _span = tracy_client::span!("Tile::render");
 
@@ -1948,8 +1944,7 @@ impl<W: LayoutElement> Tile<W> {
                 &mut |elem| elements.push(elem),
                 force_optimized_blur_global,
                 fx_buffers.clone(),
-                overview_zoom,
-                overview_zoom_use_render_loc_center,
+                overview,
             );
             match open.render(
                 renderer,
@@ -1980,8 +1975,7 @@ impl<W: LayoutElement> Tile<W> {
                 &mut |elem| elements.push(elem),
                 force_optimized_blur_global,
                 fx_buffers.clone(),
-                overview_zoom,
-                overview_zoom_use_render_loc_center,
+                overview,
             );
             match alpha.offscreen.render(renderer, scale, &elements) {
                 Ok((elem, _sync, data)) => {
@@ -2008,8 +2002,7 @@ impl<W: LayoutElement> Tile<W> {
                 push,
                 force_optimized_blur_global,
                 fx_buffers,
-                overview_zoom,
-                overview_zoom_use_render_loc_center,
+                overview,
             );
         }
     }
@@ -2033,8 +2026,7 @@ impl<W: LayoutElement> Tile<W> {
             &mut |elem| contents.push(elem),
             false,
             None,
-            None,
-            false,
+            OverviewZoom::default(),
         );
 
         // A bit of a hack to render blocked out as for screencast, but I think it's fine here.
@@ -2047,8 +2039,7 @@ impl<W: LayoutElement> Tile<W> {
             &mut |elem| blocked_out_contents.push(elem),
             false,
             None,
-            None,
-            false,
+            OverviewZoom::default(),
         );
 
         RenderSnapshot {

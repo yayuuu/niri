@@ -580,6 +580,11 @@ struct SurfaceFrameThrottlingState {
     last_sent_at: RefCell<Option<(Output, u32)>>,
 }
 
+// Separate throttling for blur-driven callbacks so we don't interfere with the normal path.
+struct BlurFrameThrottlingState {
+    last_sent_at: RefCell<Option<Instant>>,
+}
+
 pub enum CenterCoords {
     Separately,
     Both,
@@ -627,6 +632,14 @@ impl RedrawState {
 }
 
 impl Default for SurfaceFrameThrottlingState {
+    fn default() -> Self {
+        Self {
+            last_sent_at: RefCell::new(None),
+        }
+    }
+}
+
+impl Default for BlurFrameThrottlingState {
     fn default() -> Self {
         Self {
             last_sent_at: RefCell::new(None),
@@ -2629,6 +2642,29 @@ impl Niri {
             )
             .unwrap();
 
+        let initial_blur_interval = {
+            let fps = config_.layout.blur.optimized_blur_fps.0 as f32;
+            if fps > 0.0 {
+                Duration::from_secs_f32(1.0 / fps)
+            } else {
+                Duration::from_secs(1)
+            }
+        };
+        event_loop
+            .insert_source(Timer::from_duration(initial_blur_interval), |_, _, state| {
+                let blur_config = state.niri.config.borrow().layout.blur;
+                let fps = blur_config.optimized_blur_fps.0 as f32;
+                let interval = if fps > 0.0 && blur_config.radius.0 > 0. && blur_config.passes > 0 {
+                    state.niri.send_blur_frame_callbacks();
+                    state.niri.queue_redraw_all();
+                    Duration::from_secs_f32(1.0 / fps)
+                } else {
+                    Duration::from_secs(1)
+                };
+                TimeoutAction::ToDuration(interval)
+            })
+            .unwrap();
+
         let socket_name = create_wayland_socket.then(|| {
             let socket_source = ListeningSocketSource::new_auto().unwrap();
             let socket_name = socket_source.socket_name().to_os_string();
@@ -4551,14 +4587,166 @@ impl Niri {
         if let Some(mut fx_buffers) = EffectsFramebuffers::get(output) {
             let blur_config = self.config.borrow().layout.blur;
             if blur_config.radius.0 > 0. && blur_config.passes > 0 {
-                if let Err(e) = fx_buffers.update_optimized_blur_buffer(
-                    renderer.as_gles_renderer(),
-                    layer_map,
-                    output_scale,
-                    blur_config,
-                ) {
-                    error!("failed to update optimized blur buffer: {e:?}");
+                let base_fps = blur_config.optimized_blur_fps.0 as f32;
+                let animation_fps = blur_config.animation_blur_fps.0 as f32;
+                let overview_animating = zoom != 1.;
+                let workspace_switching = mon.workspace_switch_in_progress();
+                let mode_refresh = output.current_mode().map(|mode| mode.refresh as f32);
+                let refresh_hz = mode_refresh.map(|mhz| mhz / 1000.0).unwrap_or(0.0);
+                let (rerender_fps, allow_update) = if overview_animating || workspace_switching {
+                    let capped = if refresh_hz > 0.0 {
+                        animation_fps.min(refresh_hz)
+                    } else {
+                        animation_fps
+                    };
+                    (Some(capped), true)
+                } else if base_fps > 0.0 {
+                    let capped = if refresh_hz > 0.0 {
+                        base_fps.min(refresh_hz)
+                    } else {
+                        base_fps
+                    };
+                    (Some(capped), true)
+                } else if self.layout.are_animations_ongoing(Some(output)) {
+                    (None, true)
+                } else {
+                    (None, false)
                 };
+                let mut blur_elements: Vec<OutputRenderElements<GlesRenderer>> = Vec::new();
+                let gles_renderer = renderer.as_gles_renderer();
+                let target = RenderTarget::Output;
+
+                macro_rules! push_popups_from_layer {
+                    ($layer:expr, $backdrop:expr, $push:expr) => {{
+                        self.render_layer_popups(
+                            gles_renderer,
+                            target,
+                            &layer_map,
+                            $layer,
+                            $backdrop,
+                            $push,
+                        );
+                    }};
+                }
+
+                macro_rules! push_normal_from_layer {
+                    ($layer:expr, $backdrop:expr, $push:expr) => {{
+                        self.render_layer_normal(
+                            gles_renderer,
+                            target,
+                            &layer_map,
+                            $layer,
+                            $backdrop,
+                            $push,
+                            None,
+                        );
+                    }};
+                }
+
+                // Overlay layer elements go first, like in the main render path.
+                push_popups_from_layer!(Layer::Overlay, false, &mut |elem| {
+                    blur_elements.push(elem.into())
+                });
+                push_normal_from_layer!(Layer::Overlay, false, &mut |elem| {
+                    blur_elements.push(elem.into())
+                });
+
+                if mon.render_above_top_layer() {
+                    push_popups_from_layer!(Layer::Top, false, &mut |elem| {
+                        blur_elements.push(elem.into())
+                    });
+                    push_normal_from_layer!(Layer::Top, false, &mut |elem| {
+                        blur_elements.push(elem.into())
+                    });
+
+                    push_popups_from_layer!(Layer::Bottom, false, &mut |elem| {
+                        blur_elements.push(elem.into())
+                    });
+                    push_popups_from_layer!(Layer::Background, false, &mut |elem| {
+                        blur_elements.push(elem.into())
+                    });
+                    push_normal_from_layer!(Layer::Bottom, false, &mut |elem| {
+                        blur_elements.push(elem.into())
+                    });
+                    push_normal_from_layer!(Layer::Background, false, &mut |elem| {
+                        blur_elements.push(elem.into())
+                    });
+
+                    if let Some((ws, _geo)) = mon.workspaces_with_render_geo().next() {
+                        blur_elements.push(ws.render_background().into());
+                    }
+                } else {
+                    push_popups_from_layer!(Layer::Top, false, &mut |elem| {
+                        blur_elements.push(elem.into())
+                    });
+                    push_normal_from_layer!(Layer::Top, false, &mut |elem| {
+                        blur_elements.push(elem.into())
+                    });
+
+                    macro_rules! process {
+                        ($geo:expr) => {{
+                            &mut |elem| {
+                                if let Some(elem) =
+                                    scale_relocate_crop(elem, output_scale, zoom, $geo)
+                                {
+                                    blur_elements.push(elem.into());
+                                }
+                            }
+                        }};
+                    }
+
+                    for (_ws, geo) in mon.workspaces_with_render_geo() {
+                        push_popups_from_layer!(Layer::Bottom, false, process!(geo));
+                        push_popups_from_layer!(Layer::Background, false, process!(geo));
+                    }
+
+                    for (ws, geo) in mon.workspaces_with_render_geo() {
+                        push_normal_from_layer!(Layer::Bottom, false, process!(geo));
+                        push_normal_from_layer!(Layer::Background, false, process!(geo));
+
+                        if let Some(elem) = scale_relocate_crop(
+                            ws.render_background(),
+                            output_scale,
+                            zoom,
+                            geo,
+                        ) {
+                            blur_elements.push(elem.into());
+                        }
+                    }
+                }
+
+                mon.render_workspace_shadows(gles_renderer, &mut |elem| {
+                    blur_elements.push(elem.into())
+                });
+
+                push_popups_from_layer!(Layer::Background, true, &mut |elem| {
+                    blur_elements.push(elem.into())
+                });
+                push_normal_from_layer!(Layer::Background, true, &mut |elem| {
+                    blur_elements.push(elem.into())
+                });
+
+                blur_elements.push(
+                    SolidColorRenderElement::from_buffer(
+                        &state.backdrop_buffer,
+                        (0., 0.),
+                        1.,
+                        Kind::Unspecified,
+                    )
+                    .into(),
+                );
+
+                if allow_update {
+                    if let Err(e) = fx_buffers.update_optimized_blur_buffer(
+                        gles_renderer,
+                        output_scale,
+                        blur_config,
+                        rerender_fps,
+                        blur_elements.into_iter().rev(),
+                    ) {
+                        error!("failed to update optimized blur buffer: {e:?}");
+                    };
+                }
             }
         }
 
@@ -5085,6 +5273,47 @@ impl Niri {
             );
         }
     }
+
+    pub fn send_blur_frame_callbacks(&mut self) {
+        let _span = tracy_client::span!("Niri::send_blur_frame_callbacks");
+
+        let blur_config = self.config.borrow().layout.blur;
+        let fps = blur_config.optimized_blur_fps.0 as f32;
+        if fps <= 0.0 || blur_config.radius.0 <= 0. || blur_config.passes == 0 {
+            return;
+        }
+
+        let interval = Duration::from_secs_f32(1.0 / fps);
+        let now = Instant::now();
+        let frame_callback_time = get_monotonic_time();
+
+        for (output, _) in self.output_state.iter() {
+            for surface in layer_map_for_output(output).layers() {
+                surface.send_frame(
+                    output,
+                    frame_callback_time,
+                    Some(interval),
+                    |_, states| {
+                        let throttling = states
+                            .data_map
+                            .get_or_insert(BlurFrameThrottlingState::default);
+                        let mut last_sent_at = throttling.last_sent_at.borrow_mut();
+
+                        let should_send = last_sent_at
+                            .map(|last| now.duration_since(last) >= interval)
+                            .unwrap_or(true);
+                        if should_send {
+                            *last_sent_at = Some(now);
+                            Some(output.clone())
+                        } else {
+                            None
+                        }
+                    },
+                );
+            }
+        }
+    }
+
 
     pub fn send_frame_callbacks_on_fallback_timer(&mut self) {
         let _span = tracy_client::span!("Niri::send_frame_callbacks_on_fallback_timer");

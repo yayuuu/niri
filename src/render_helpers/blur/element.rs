@@ -26,6 +26,14 @@ use crate::render_helpers::shaders::{mat3_uniform, Shaders};
 
 use super::{CurrentBuffer, EffectsFramebuffers};
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OverviewZoom {
+    pub zoom: Option<f64>,
+    pub center: Option<Point<f64, Logical>>,
+    pub offset: Option<Point<f64, Logical>>,
+    pub use_render_loc_center: bool,
+}
+
 #[derive(Debug, Clone)]
 enum BlurVariant {
     Optimized {
@@ -37,7 +45,7 @@ enum BlurVariant {
         texture: GlesTexture,
         fx_buffers: EffectsFramebuffersUserData,
         config: niri_config::Blur,
-        /// Timer to limit redraw rate of true blur. Currently set at 150ms fixed (~6.6 fps).
+        /// Timer to limit redraw rate of true blur.
         rerender_at: Rc<RefCell<Option<Instant>>>,
     },
 }
@@ -133,15 +141,14 @@ impl Blur {
         force_optimized: bool,
         mut true_blur: bool,
         render_loc: Point<f64, Logical>,
-        overview_zoom: Option<f64>,
-        overview_zoom_center: Option<Point<f64, Logical>>,
+        overview: OverviewZoom,
     ) -> Option<BlurRenderElement> {
         if !self.config.on || self.config.passes == 0 || self.config.radius.0 == 0. {
             return None;
         }
 
         let mut render_config = self.config;
-        if let Some(zoom) = overview_zoom {
+        if let Some(zoom) = overview.zoom {
             render_config.radius = FloatOrInt(self.config.radius.0 * zoom as f64);
         }
 
@@ -159,14 +166,22 @@ impl Blur {
             true_blur = false;
         }
 
-        let sample_area = if let (Some(zoom), true) = (overview_zoom, true_blur) {
+        let sample_area = if let Some(zoom) = overview.zoom {
             let mut sample_area = destination_area.to_f64().upscale(zoom);
-            let center = overview_zoom_center.unwrap_or_else(|| {
-                (fx_buffers.borrow().output_size.to_f64().to_logical(scale) / 2.).to_point()
-            });
-            sample_area.loc.x = center.x - (center.x - destination_area.loc.x as f64) * zoom;
-            sample_area.loc.y = center.y - (center.y - destination_area.loc.y as f64) * zoom;
+            if let Some(offset) = overview.offset {
+                sample_area.loc += offset;
+            } else {
+                let center = overview.center.unwrap_or_else(|| {
+                    (fx_buffers.borrow().output_size.to_f64().to_logical(scale) / 2.).to_point()
+                });
+                sample_area.loc.x = center.x - (center.x - destination_area.loc.x as f64) * zoom;
+                sample_area.loc.y = center.y - (center.y - destination_area.loc.y as f64) * zoom;
+            }
             sample_area.to_i32_round()
+        } else if let Some(offset) = overview.offset {
+            let mut sample_area = destination_area;
+            sample_area.loc += offset.to_i32_round();
+            sample_area
         } else {
             destination_area
         };
@@ -205,6 +220,7 @@ impl Blur {
                     }
                 },
                 render_loc,
+                fx_buffers.borrow().optimized_blur_generation(),
             );
 
             *inner = Some(elem.clone());
@@ -230,6 +246,14 @@ impl Blur {
         }
 
         let fx_buffers = fx_buffers.borrow();
+        let optimized_generation = fx_buffers.optimized_blur_generation();
+
+        if matches!(&inner.variant, BlurVariant::Optimized { .. })
+            && inner.optimized_blur_generation != optimized_generation
+        {
+            inner.optimized_blur_generation = optimized_generation;
+            inner.damage_all();
+        }
 
         let variant_needs_rerender = match &inner.variant {
             BlurVariant::Optimized { texture } => {
@@ -285,7 +309,10 @@ impl Blur {
                 // force an immediate redraw of true blur on geometry changes
                 rerender_at.set(None);
             }
-            BlurVariant::Optimized { texture } => *texture = fx_buffers.optimized_blur.clone(),
+            BlurVariant::Optimized { texture } => {
+                *texture = fx_buffers.optimized_blur.clone();
+                inner.optimized_blur_generation = optimized_generation;
+            }
         }
 
         if damage_variant {
@@ -317,6 +344,7 @@ pub struct BlurRenderElement {
     geometry: Rectangle<f64, Logical>,
     variant: BlurVariant,
     render_loc: Point<f64, Logical>,
+    optimized_blur_generation: u64,
 }
 
 impl BlurRenderElement {
@@ -340,6 +368,7 @@ impl BlurRenderElement {
         alpha_tex: Option<GlesTexture>,
         variant: BlurVariant,
         render_loc: Point<f64, Logical>,
+        optimized_blur_generation: u64,
     ) -> Self {
         let mut this = Self {
             id: Id::new(),
@@ -353,6 +382,7 @@ impl BlurRenderElement {
             commit: CommitCounter::default(),
             variant,
             render_loc,
+            optimized_blur_generation,
         };
 
         this.update_uniforms(fx_buffers, &config);
@@ -569,7 +599,9 @@ impl RenderElement<GlesRenderer> for BlurRenderElement {
                         )
                     })??;
 
-                    rerender_at.set(get_rerender_at(Some(config.fps.0 as f32)));
+                    let fps = config.true_blur_fps.0 as f32;
+                    let fps = if fps > 0.0 { fps.max(15.0) } else { 15.0 };
+                    rerender_at.set(get_rerender_at(Some(fps)));
                 };
 
                 gles_frame.render_texture_from_to(

@@ -102,7 +102,7 @@ layer-rule {
 #### `blur`
 
 Override blur options for the surface.
-These options match the [layout blur settings](./Configuration:-Layout.md#blur), including `fps` for true blur refresh rate.
+These options match the [layout blur settings](./Configuration:-Layout.md#blur), including the `*_blur_fps` options.
 
 ```kdl
 layer-rule {

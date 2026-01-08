@@ -1737,6 +1737,7 @@ impl<W: LayoutElement> Workspace<W> {
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
         overview_zoom: f64,
         force_optimized_blur: bool,
+        overview_zoom_offset: Option<Point<f64, Logical>>,
     ) {
         let fx_buffers = self
             .current_output()
@@ -1751,6 +1752,7 @@ impl<W: LayoutElement> Workspace<W> {
             force_optimized_blur,
             fx_buffers,
             overview_zoom,
+            overview_zoom_offset,
         );
     }
 
@@ -1762,6 +1764,7 @@ impl<W: LayoutElement> Workspace<W> {
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
         overview_zoom: f64,
         force_optimized_blur: bool,
+        overview_zoom_offset: Option<Point<f64, Logical>>,
     ) {
         if !self.is_floating_visible() {
             return;
@@ -1782,6 +1785,7 @@ impl<W: LayoutElement> Workspace<W> {
             force_optimized_blur,
             fx_buffers,
             overview_zoom,
+            overview_zoom_offset,
         );
     }
 

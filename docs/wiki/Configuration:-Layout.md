@@ -385,7 +385,11 @@ Enable it with `on` and adjust the blur strength with `passes`, `radius` and `no
 `optimized` is `true` by default and uses a shared blur texture for tiled windows (floating windows already render blur in real time).
 Set `optimized false` to force real-time blur for every window that uses this blur config, or override it per-window with a [`window-rule`](./Configuration:-Window-Rules.md).
 
-`fps` caps how often *true* blur (non-optimized) is re-rendered.
+`true-blur-fps` caps how often *true* blur (non-optimized) is re-rendered. Minimum is 1 FPS.
+`optimized-blur-fps` caps how often the optimized blur texture is refreshed. Set it to `0` to disable periodic refreshes.
+`animation-blur-fps` caps optimized blur refresh during overview/workspace switch animations.
+`fps` is a shared fallback for `true_blur_fps` and `optimized_blur_fps` (but not for `animation-blur_fps`).
+If you don't set `true-blur-fps` or `optimized-blur-fps`, the value from `fps` is used instead.
 The default matches the previous 150 ms timer (~6.7 fps).
 
 ```kdl
@@ -397,6 +401,9 @@ layout {
         noise 0.1
         optimized false
         fps 30
+        true-blur-fps 15
+        optimized-blur-fps 0
+        animation-blur-fps 60
     }
 }
 ```

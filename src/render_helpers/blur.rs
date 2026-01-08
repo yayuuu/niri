@@ -4,22 +4,21 @@ pub mod element;
 pub mod optimized_blur_texture_element;
 pub(super) mod shader;
 
+pub use element::OverviewZoom;
+
 use anyhow::Context;
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 
 use glam::{Mat3, Vec2};
 use niri_config::Blur;
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::element::AsRenderElements;
+use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::gles::format::fourcc_to_gl_formats;
 use smithay::backend::renderer::gles::{ffi, Capability, GlesError, GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{Bind, Blit, Frame, Offscreen, Renderer, Texture, TextureFilter};
-use smithay::desktop::LayerMap;
 use smithay::output::Output;
 use smithay::reexports::gbm::Format;
 use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Size, Transform};
-use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::render_helpers::renderer::NiriRenderer;
 use shader::BlurShaders;
@@ -28,7 +27,6 @@ use super::render_data::RendererData;
 use super::render_elements;
 use super::shaders::Shaders;
 
-use std::sync::MutexGuard;
 use std::time::{Duration, Instant};
 
 const DEFAULT_BLUR_RERENDER_INTERVAL: Duration = Duration::from_millis(150);
@@ -60,6 +58,8 @@ pub struct EffectsFramebuffers {
     optimized_blur: GlesTexture,
     /// Whether the optimizer blur buffer is dirty
     optimized_blur_rerender_at: Option<Instant>,
+    /// Generation counter for optimized blur updates.
+    optimized_blur_generation: u64,
     // /// Contains the original pixels before blurring to draw with in case of artifacts.
     // blur_saved_pixels: GlesTexture,
     // The blur algorithms (dual-kawase) swaps between these two whenever scaling the image
@@ -137,6 +137,7 @@ impl EffectsFramebuffers {
         let this = EffectsFramebuffers {
             optimized_blur: create_buffer(renderer, texture_size).unwrap(),
             optimized_blur_rerender_at: get_rerender_at(None),
+            optimized_blur_generation: 0,
             effects: create_buffer(renderer, texture_size).unwrap(),
             effects_swapped: create_buffer(renderer, texture_size).unwrap(),
             current_buffer: CurrentBuffer::Normal,
@@ -178,6 +179,7 @@ impl EffectsFramebuffers {
         *fx_buffers = EffectsFramebuffers {
             optimized_blur: create_buffer(renderer, texture_size)?,
             optimized_blur_rerender_at: get_rerender_at(None),
+            optimized_blur_generation: 0,
             effects: create_buffer(renderer, texture_size)?,
             effects_swapped: create_buffer(renderer, texture_size)?,
             current_buffer: CurrentBuffer::Normal,
@@ -192,50 +194,27 @@ impl EffectsFramebuffers {
     pub fn update_optimized_blur_buffer(
         &mut self,
         renderer: &mut GlesRenderer,
-        layer_map: MutexGuard<'_, LayerMap>,
         scale: Scale<f64>,
         config: Blur,
+        rerender_fps: Option<f32>,
+        elements: impl Iterator<Item = impl RenderElement<GlesRenderer>>,
     ) -> anyhow::Result<()> {
-        if matches!(self.optimized_blur_rerender_at, Some(t) if t > Instant::now()) {
+        let now = Instant::now();
+        let rerender_fps = rerender_fps.filter(|fps| *fps > 0.);
+        if let Some(fps) = rerender_fps {
+            let interval = Duration::from_secs_f32(1. / fps);
+            match self.optimized_blur_rerender_at {
+                Some(next) if next > now + interval => {
+                    self.optimized_blur_rerender_at = Some(now);
+                }
+                Some(next) if next > now => return Ok(()),
+                _ => {}
+            }
+        } else if matches!(self.optimized_blur_rerender_at, Some(t) if t > now) {
             return Ok(());
         }
 
-        self.optimized_blur_rerender_at = get_rerender_at(None);
-
-        // first render layer shell elements
-        // NOTE: We use Blur::DISABLED since we should not include blur with Background/Bottom
-        // layer shells
-        // Include Top as well so widgets/bars under windows end up in the cached texture.
-        let mut elements = vec![];
-        for layer in layer_map.layers_on(Layer::Background).rev() {
-            let layer_geo = layer_map.layer_geometry(layer).unwrap();
-            let location = layer_geo.loc.to_physical_precise_round(scale);
-            elements.extend(
-                layer.render_elements::<WaylandSurfaceRenderElement<_>>(
-                    renderer, location, scale, 1.0,
-                ),
-            );
-        }
-
-        for layer in layer_map.layers_on(Layer::Bottom).rev() {
-            let layer_geo = layer_map.layer_geometry(layer).unwrap();
-            let location = layer_geo.loc.to_physical_precise_round(scale);
-            elements.extend(
-                layer.render_elements::<WaylandSurfaceRenderElement<_>>(
-                    renderer, location, scale, 1.0,
-                ),
-            );
-        }
-
-        for layer in layer_map.layers_on(Layer::Top).rev() {
-            let layer_geo = layer_map.layer_geometry(layer).unwrap();
-            let location = layer_geo.loc.to_physical_precise_round(scale);
-            elements.extend(
-                layer.render_elements::<WaylandSurfaceRenderElement<_>>(
-                    renderer, location, scale, 1.0,
-                ),
-            );
-        }
+        self.optimized_blur_rerender_at = get_rerender_at(rerender_fps);
 
         let mut fb = renderer.bind(&mut self.effects).unwrap();
 
@@ -245,7 +224,7 @@ impl EffectsFramebuffers {
             self.output_size,
             scale,
             Transform::Normal,
-            elements.iter(),
+            elements,
         )
         .expect("failed to render for optimized blur buffer");
         drop(fb);
@@ -305,6 +284,8 @@ impl EffectsFramebuffers {
             TextureFilter::Linear,
         )?;
 
+        self.optimized_blur_generation = self.optimized_blur_generation.wrapping_add(1);
+
         Ok(())
     }
 
@@ -322,6 +303,10 @@ impl EffectsFramebuffers {
 
     pub fn transform(&self) -> Transform {
         self.transform
+    }
+
+    pub fn optimized_blur_generation(&self) -> u64 {
+        self.optimized_blur_generation
     }
 }
 

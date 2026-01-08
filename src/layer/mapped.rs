@@ -13,7 +13,7 @@ use crate::animation::Clock;
 use crate::layout::shadow::Shadow;
 use crate::niri_render_elements;
 use crate::render_helpers::blur::element::{Blur, BlurRenderElement, CommitTracker};
-use crate::render_helpers::blur::EffectsFramebuffersUserData;
+use crate::render_helpers::blur::{EffectsFramebuffersUserData, OverviewZoom};
 use crate::render_helpers::clipped_surface::ClippedSurfaceRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::shadow::ShadowRenderElement;
@@ -291,8 +291,7 @@ impl MappedLayer {
                     false,
                     !self.rules.blur.x_ray.unwrap_or_default(),
                     blur_sample_area.loc.to_f64(),
-                    None,
-                    None,
+                    OverviewZoom::default(),
                 )
                 .map(Into::into)
         })

@@ -344,7 +344,10 @@ pub struct Blur {
     pub passes: u32,
     pub radius: FloatOrInt<0, 1024>,
     pub noise: FloatOrInt<0, 1024>,
-    pub fps: FloatOrInt<1, 1000>,
+    pub fps: FloatOrInt<0, 1000>,
+    pub true_blur_fps: FloatOrInt<1, 1000>,
+    pub optimized_blur_fps: FloatOrInt<0, 1000>,
+    pub animation_blur_fps: FloatOrInt<1, 1000>,
     pub optimized: bool,
     pub brightness: FloatOrInt<0, 2>,
     pub contrast: FloatOrInt<0, 1024>,
@@ -360,7 +363,10 @@ impl Default for Blur {
             passes: 0,
             radius: FloatOrInt(0.0),
             noise: FloatOrInt(0.0),
-            fps: FloatOrInt(6.666_666_5),
+            fps: FloatOrInt(0.0),
+            true_blur_fps: FloatOrInt(6.666_666_5),
+            optimized_blur_fps: FloatOrInt(0.0),
+            animation_blur_fps: FloatOrInt(60.0),
             optimized: true,
             brightness: FloatOrInt(1.0),
             contrast: FloatOrInt(1.0),
@@ -384,6 +390,9 @@ impl MergeWith<BlurRule> for Blur {
             radius,
             noise,
             fps,
+            true_blur_fps,
+            optimized_blur_fps,
+            animation_blur_fps,
             optimized,
             brightness,
             contrast,
@@ -391,6 +400,16 @@ impl MergeWith<BlurRule> for Blur {
             ignore_alpha,
             x_ray
         );
+
+        if let Some(fps) = part.fps {
+            if part.true_blur_fps.is_none() {
+                let fps_val = fps.0.max(1.0);
+                self.true_blur_fps = FloatOrInt(fps_val);
+            }
+            if part.optimized_blur_fps.is_none() {
+                self.optimized_blur_fps = fps;
+            }
+        }
     }
 }
 
@@ -715,7 +734,13 @@ pub struct BlurRule {
     #[knuffel(child, unwrap(argument))]
     pub noise: Option<FloatOrInt<0, 1024>>,
     #[knuffel(child, unwrap(argument))]
-    pub fps: Option<FloatOrInt<1, 1000>>,
+    pub fps: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub true_blur_fps: Option<FloatOrInt<1, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub optimized_blur_fps: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub animation_blur_fps: Option<FloatOrInt<1, 1000>>,
     #[knuffel(child, unwrap(argument))]
     pub optimized: Option<bool>,
     #[knuffel(child, unwrap(argument))]

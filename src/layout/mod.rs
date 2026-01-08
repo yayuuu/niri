@@ -60,7 +60,7 @@ use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::scrolling::ScrollDirection;
 use crate::niri_render_elements;
-use crate::render_helpers::blur::EffectsFramebuffers;
+use crate::render_helpers::blur::{EffectsFramebuffers, OverviewZoom};
 use crate::render_helpers::offscreen::OffscreenData;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::snapshot::RenderSnapshot;
@@ -4917,8 +4917,12 @@ impl<W: LayoutElement> Layout<W> {
             },
             true,
             fx_buffers,
-            overview_zoom,
-            self.overview_progress.is_some(),
+            OverviewZoom {
+                zoom: overview_zoom,
+                center: None,
+                offset: None,
+                use_render_loc_center: self.overview_progress.is_some(),
+            },
         );
     }
 

@@ -49,15 +49,17 @@ layout {
     passes 2
     radius 5
 
-    // FPS at which true blur is rendered
-    fps 15
+    // FPS at which true blur is rendered, true blur is used for floating windows and optimized-blur for tiled windows
+    true-blur-fps 15
+    optimized-blur-fps 0
+    animation-blur-fps 60
   }
 }
 
 window-rule {
   blur {
     on
-    // Uncomment if you use animated desktop widgets and want to see them through transparent windows
+    // You can force using true blur for tiled windows as well, not recommended
     // This option will use more resources
     // optimized false
   }
