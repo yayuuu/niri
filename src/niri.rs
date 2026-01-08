@@ -4552,7 +4552,8 @@ impl Niri {
             let blur_config = self.config.borrow().layout.blur;
             if blur_config.radius.0 > 0. && blur_config.passes > 0 {
                 let overview_animating = zoom != 1.;
-                let rerender_fps = overview_animating.then_some({
+                let workspace_switching = mon.workspace_switch_in_progress();
+                let rerender_fps = (overview_animating || workspace_switching).then_some({
                     let mode_refresh = output.current_mode().map(|mode| mode.refresh as f32);
                     let refresh_hz = mode_refresh.map(|mhz| mhz / 1000.0).unwrap_or(0.0);
                     let target_fps = (blur_config.fps.0 as f32) * 4.0;

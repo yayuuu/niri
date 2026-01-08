@@ -178,6 +178,10 @@ impl Blur {
                 sample_area.loc.y = center.y - (center.y - destination_area.loc.y as f64) * zoom;
             }
             sample_area.to_i32_round()
+        } else if let Some(offset) = overview.offset {
+            let mut sample_area = destination_area;
+            sample_area.loc += offset.to_i32_round();
+            sample_area
         } else {
             destination_area
         };
