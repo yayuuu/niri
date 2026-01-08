@@ -19,7 +19,7 @@ use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::SizingMode;
 use crate::niri_render_elements;
-use crate::render_helpers::blur::EffectsFramebuffersUserData;
+use crate::render_helpers::blur::{EffectsFramebuffersUserData, OverviewZoom};
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::RenderTarget;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
@@ -3538,9 +3538,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     &mut |elem| push(elem.into()),
                     force_optimized_blur,
                     fx_buffers.clone(),
-                    Some(overview_zoom),
-                    false,
-                    overview_zoom_offset,
+                    OverviewZoom {
+                        zoom: Some(overview_zoom),
+                        center: None,
+                        offset: overview_zoom_offset,
+                        use_render_loc_center: false,
+                    },
                 );
             }
         }

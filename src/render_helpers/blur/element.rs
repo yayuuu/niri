@@ -26,6 +26,14 @@ use crate::render_helpers::shaders::{mat3_uniform, Shaders};
 
 use super::{CurrentBuffer, EffectsFramebuffers};
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OverviewZoom {
+    pub zoom: Option<f64>,
+    pub center: Option<Point<f64, Logical>>,
+    pub offset: Option<Point<f64, Logical>>,
+    pub use_render_loc_center: bool,
+}
+
 #[derive(Debug, Clone)]
 enum BlurVariant {
     Optimized {
@@ -133,16 +141,14 @@ impl Blur {
         force_optimized: bool,
         mut true_blur: bool,
         render_loc: Point<f64, Logical>,
-        overview_zoom: Option<f64>,
-        overview_zoom_center: Option<Point<f64, Logical>>,
-        overview_zoom_offset: Option<Point<f64, Logical>>,
+        overview: OverviewZoom,
     ) -> Option<BlurRenderElement> {
         if !self.config.on || self.config.passes == 0 || self.config.radius.0 == 0. {
             return None;
         }
 
         let mut render_config = self.config;
-        if let Some(zoom) = overview_zoom {
+        if let Some(zoom) = overview.zoom {
             render_config.radius = FloatOrInt(self.config.radius.0 * zoom as f64);
         }
 
@@ -160,12 +166,12 @@ impl Blur {
             true_blur = false;
         }
 
-        let sample_area = if let Some(zoom) = overview_zoom {
+        let sample_area = if let Some(zoom) = overview.zoom {
             let mut sample_area = destination_area.to_f64().upscale(zoom);
-            if let Some(offset) = overview_zoom_offset {
+            if let Some(offset) = overview.offset {
                 sample_area.loc += offset;
             } else {
-                let center = overview_zoom_center.unwrap_or_else(|| {
+                let center = overview.center.unwrap_or_else(|| {
                     (fx_buffers.borrow().output_size.to_f64().to_logical(scale) / 2.).to_point()
                 });
                 sample_area.loc.x = center.x - (center.x - destination_area.loc.x as f64) * zoom;

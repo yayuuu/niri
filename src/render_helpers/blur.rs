@@ -4,6 +4,8 @@ pub mod element;
 pub mod optimized_blur_texture_element;
 pub(super) mod shader;
 
+pub use element::OverviewZoom;
+
 use anyhow::Context;
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
