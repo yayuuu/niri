@@ -1,3 +1,4 @@
+
 use insta::assert_snapshot;
 
 use super::*;
@@ -342,7 +343,7 @@ fn interactive_move_restore_to_floating_animates_view_offset() {
 
     // Verify window 1 is in scrolling and has restore_to_floating = true.
     let scrolling = layout.active_workspace().unwrap().scrolling();
-    let tile1 = scrolling.tiles().find(|t| *t.window().id() == 1).unwrap();
+    let tile1 = scrolling.tiles().find(|t| *t.windows().id() == 1).unwrap();
     assert!(
         tile1.restore_to_floating,
         "window 1 should have restore_to_floating = true"
@@ -372,7 +373,7 @@ fn interactive_move_restore_to_floating_animates_view_offset() {
     // Window 2 should be the only window in the scrolling space.
     let scrolling = layout.active_workspace().unwrap().scrolling();
     assert_eq!(scrolling.tiles().count(), 1);
-    assert!(scrolling.tiles().next().unwrap().window().id() == &2);
+    assert!(scrolling.tiles().next().unwrap().windows().id() == &2);
 
     // The view offset should be animating to show window 2.
     assert!(scrolling.view_offset().is_animation_ongoing());
