@@ -1,4 +1,5 @@
 mod compositor;
+mod dnd_fix;
 mod layer_shell;
 mod xdg_shell;
 
@@ -96,6 +97,7 @@ use crate::{
     delegate_gamma_control, delegate_mutter_x11_interop, delegate_org_kde_kwin_blur,
     delegate_output_management, delegate_screencopy, delegate_virtual_pointer,
 };
+use dnd_fix::WorkaroundDndGrab;
 
 pub const XDG_ACTIVATION_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -334,7 +336,7 @@ impl WaylandDndGrabHandler for State {
                 let pointer = seat.get_pointer().unwrap();
                 let start_data = pointer.grab_start_data().unwrap();
                 let grab =
-                    DnDGrab::new_pointer(&self.niri.display_handle, start_data, source, seat);
+                    WorkaroundDndGrab::new_pointer(&self.niri.display_handle, start_data, source, seat);
                 pointer.set_grab(self, grab, serial, Focus::Keep);
             }
             dnd::GrabType::Touch => {
