@@ -2311,7 +2311,12 @@ impl Tty {
         device.powered_down_surfaces.insert(tty_state.crtc, surface);
 
         if let Some(state) = niri.output_state.get_mut(output) {
-            state.redraw_state = RedrawState::Idle;
+            let prev = mem::replace(&mut state.redraw_state, RedrawState::Idle);
+            if let RedrawState::WaitingForEstimatedVBlank(token)
+            | RedrawState::WaitingForEstimatedVBlankAndQueued(token) = prev
+            {
+                niri.event_loop.remove(token);
+            }
         }
     }
 
