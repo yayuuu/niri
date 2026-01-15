@@ -139,18 +139,19 @@
             install -Dm644 resources/niri{.service,-shutdown.target} -t $out/share/systemd/user
           '';
 
-        env = {
-          # Force linking with libEGL and libwayland-client
-          # so they can be discovered by `dlopen()`
-          RUSTFLAGS = toString (
-            map (arg: "-C link-arg=" + arg) [
-              "-Wl,--push-state,--no-as-needed"
-              "-lEGL"
-              "-lwayland-client"
-              "-Wl,--pop-state"
-            ]
-          );
-        };
+          env = {
+            # Force linking with libEGL and libwayland-client
+            # so they can be discovered by `dlopen()`
+            RUSTFLAGS = toString (
+              map (arg: "-C link-arg=" + arg) [
+                "-Wl,--push-state,--no-as-needed"
+                "-lEGL"
+                "-lwayland-client"
+                "-Wl,--pop-state"
+              ]
+            );
+            NIRI_BUILD_COMMIT = self.shortRev;
+          };
 
         passthru = {
           providedSessions = ["niri"];
