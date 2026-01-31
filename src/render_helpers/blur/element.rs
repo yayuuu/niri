@@ -182,13 +182,6 @@ impl Blur {
 
         let mut inner = self.inner.borrow_mut();
 
-        if inner
-            .as_ref()
-            .is_some_and(|elem| elem.needs_fx_buffers_reset(&fx_buffers))
-        {
-            inner.take();
-        }
-
         let Some(inner) = inner.as_mut() else {
             let elem = BlurRenderElement::new(
                 &fx_buffers.borrow(),
@@ -421,25 +414,6 @@ impl BlurRenderElement {
     fn damage_all(&mut self) {
         self.commit.increment()
     }
-
-    fn needs_fx_buffers_reset(&self, fx_buffers: &EffectsFramebuffersUserData) -> bool {
-        match &self.variant {
-            BlurVariant::True {
-                fx_buffers: old,
-                texture,
-                ..
-            } => {
-                if !Rc::ptr_eq(old, fx_buffers) {
-                    return true;
-                }
-
-                let output_size = fx_buffers.borrow().output_size();
-                let tex_size = texture.size();
-                tex_size.w != output_size.w || tex_size.h != output_size.h
-            }
-            BlurVariant::Optimized { .. } => false,
-        }
-    }
 }
 
 impl Element for BlurRenderElement {
@@ -519,7 +493,13 @@ impl RenderElement<GlesRenderer> for BlurRenderElement {
     ) -> Result<(), GlesError> {
         let _span = trace_span!("blur_draw_gles").entered();
 
-        let blur_dst = dst;
+        let downscaled_dst = Rectangle::new(
+            dst.loc,
+            Size::from((
+                (dst.size.w as f64 / self.scale) as i32,
+                (dst.size.h as f64 / self.scale) as i32,
+            )),
+        );
 
         let program = Shaders::get_from_frame(gles_frame)
             .blur_finish
@@ -539,7 +519,7 @@ impl RenderElement<GlesRenderer> for BlurRenderElement {
             BlurVariant::Optimized { texture } => gles_frame.render_texture_from_to(
                 texture,
                 src,
-                blur_dst,
+                downscaled_dst,
                 damage,
                 opaque_regions,
                 Transform::Normal,
@@ -583,7 +563,7 @@ impl RenderElement<GlesRenderer> for BlurRenderElement {
                             &vbos,
                             debug,
                             supports_instancing,
-                            blur_dst,
+                            downscaled_dst,
                             texture,
                             self.alpha_tex.as_ref(),
                         )
@@ -595,7 +575,7 @@ impl RenderElement<GlesRenderer> for BlurRenderElement {
                 gles_frame.render_texture_from_to(
                     texture,
                     src,
-                    blur_dst,
+                    downscaled_dst,
                     damage,
                     opaque_regions,
                     fx_buffers.transform(),
