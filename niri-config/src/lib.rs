@@ -1319,33 +1319,6 @@ mod tests {
                     inactive_gradient: None,
                     urgent_gradient: None,
                 },
-                blur: Blur {
-                    on: false,
-                    passes: 0,
-                    radius: FloatOrInt(
-                        0.0,
-                    ),
-                    noise: FloatOrInt(
-                        0.0,
-                    ),
-                    fps: FloatOrInt(
-                        6.666_666_5,
-                    ),
-                    optimized: true,
-                    brightness: FloatOrInt(
-                        1.0,
-                    ),
-                    contrast: FloatOrInt(
-                        1.0,
-                    ),
-                    saturation: FloatOrInt(
-                        1.0,
-                    ),
-                    ignore_alpha: FloatOrInt(
-                        0.0,
-                    ),
-                    x_ray: false,
-                },
                 shadow: Shadow {
                     on: false,
                     offset: ShadowOffset {
@@ -1823,20 +1796,6 @@ mod tests {
                         inactive_gradient: None,
                         urgent_gradient: None,
                     },
-                    blur: BlurRule {
-                        off: false,
-                        on: false,
-                        passes: None,
-                        radius: None,
-                        noise: None,
-                        fps: None,
-                        optimized: None,
-                        brightness: None,
-                        contrast: None,
-                        saturation: None,
-                        ignore_alpha: None,
-                        x_ray: None,
-                    },
                     shadow: ShadowRule {
                         off: false,
                         on: false,
@@ -1912,20 +1871,6 @@ mod tests {
                         draw_behind_window: None,
                         color: None,
                         inactive_color: None,
-                    },
-                    blur: BlurRule {
-                        off: false,
-                        on: false,
-                        passes: None,
-                        radius: None,
-                        noise: None,
-                        fps: None,
-                        optimized: None,
-                        brightness: None,
-                        contrast: None,
-                        saturation: None,
-                        ignore_alpha: None,
-                        x_ray: None,
                     },
                     geometry_corner_radius: None,
                     place_within_backdrop: None,

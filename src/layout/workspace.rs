@@ -30,7 +30,6 @@ use super::{
 };
 use crate::animation::Clock;
 use crate::niri_render_elements;
-use crate::render_helpers::blur::EffectsFramebuffers;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::shadow::ShadowRenderElement;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
@@ -1735,22 +1734,13 @@ impl<W: LayoutElement> Workspace<W> {
         target: RenderTarget,
         focus_ring: bool,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
-        overview_zoom: f64,
-        force_optimized_blur: bool,
     ) {
-        let fx_buffers = self
-            .current_output()
-            .and_then(EffectsFramebuffers::get_user_data);
-
         let scrolling_focus_ring = focus_ring && !self.floating_is_active();
         self.scrolling.render(
             renderer,
             target,
             scrolling_focus_ring,
             &mut |elem| push(elem.into()),
-            force_optimized_blur,
-            fx_buffers,
-            overview_zoom,
         );
     }
 
@@ -1760,16 +1750,10 @@ impl<W: LayoutElement> Workspace<W> {
         target: RenderTarget,
         focus_ring: bool,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
-        overview_zoom: f64,
-        force_optimized_blur: bool,
     ) {
         if !self.is_floating_visible() {
             return;
         }
-
-        let fx_buffers = self
-            .current_output()
-            .and_then(EffectsFramebuffers::get_user_data);
 
         let view_rect = Rectangle::from_size(self.view_size);
         let floating_focus_ring = focus_ring && self.floating_is_active();
@@ -1779,9 +1763,6 @@ impl<W: LayoutElement> Workspace<W> {
             target,
             floating_focus_ring,
             &mut |elem| push(elem.into()),
-            force_optimized_blur,
-            fx_buffers,
-            overview_zoom,
         );
     }
 

@@ -339,62 +339,6 @@ impl MergeWith<BorderRule> for FocusRing {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Blur {
-    pub on: bool,
-    pub passes: u32,
-    pub radius: FloatOrInt<0, 1024>,
-    pub noise: FloatOrInt<0, 1024>,
-    pub fps: FloatOrInt<1, 1000>,
-    pub optimized: bool,
-    pub brightness: FloatOrInt<0, 2>,
-    pub contrast: FloatOrInt<0, 1024>,
-    pub saturation: FloatOrInt<0, 1024>,
-    pub ignore_alpha: FloatOrInt<0, 1>,
-    pub x_ray: bool,
-}
-
-impl Default for Blur {
-    fn default() -> Self {
-        Self {
-            on: false,
-            passes: 0,
-            radius: FloatOrInt(0.0),
-            noise: FloatOrInt(0.0),
-            fps: FloatOrInt(6.666_666_5),
-            optimized: true,
-            brightness: FloatOrInt(1.0),
-            contrast: FloatOrInt(1.0),
-            saturation: FloatOrInt(1.0),
-            ignore_alpha: FloatOrInt(0.0),
-            x_ray: false,
-        }
-    }
-}
-
-impl MergeWith<BlurRule> for Blur {
-    fn merge_with(&mut self, part: &BlurRule) {
-        self.on |= part.on;
-        if part.off {
-            self.on = false;
-        }
-
-        merge_clone!(
-            (self, part),
-            passes,
-            radius,
-            noise,
-            fps,
-            optimized,
-            brightness,
-            contrast,
-            saturation,
-            ignore_alpha,
-            x_ray
-        );
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shadow {
     pub on: bool,
     pub offset: ShadowOffset,
@@ -703,34 +647,6 @@ pub struct BorderRule {
 }
 
 #[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
-pub struct BlurRule {
-    #[knuffel(child)]
-    pub off: bool,
-    #[knuffel(child)]
-    pub on: bool,
-    #[knuffel(child, unwrap(argument))]
-    pub passes: Option<u32>,
-    #[knuffel(child, unwrap(argument))]
-    pub radius: Option<FloatOrInt<0, 1024>>,
-    #[knuffel(child, unwrap(argument))]
-    pub noise: Option<FloatOrInt<0, 1024>>,
-    #[knuffel(child, unwrap(argument))]
-    pub fps: Option<FloatOrInt<1, 1000>>,
-    #[knuffel(child, unwrap(argument))]
-    pub optimized: Option<bool>,
-    #[knuffel(child, unwrap(argument))]
-    pub brightness: Option<FloatOrInt<0, 2>>,
-    #[knuffel(child, unwrap(argument))]
-    pub contrast: Option<FloatOrInt<0, 1024>>,
-    #[knuffel(child, unwrap(argument))]
-    pub saturation: Option<FloatOrInt<0, 1024>>,
-    #[knuffel(child, unwrap(argument))]
-    pub ignore_alpha: Option<FloatOrInt<0, 1>>,
-    #[knuffel(child, unwrap(argument))]
-    pub x_ray: Option<bool>,
-}
-
-#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
 pub struct ShadowRule {
     #[knuffel(child)]
     pub off: bool,
@@ -764,6 +680,10 @@ pub struct TabIndicatorRule {
     pub inactive_gradient: Option<Gradient>,
     #[knuffel(child)]
     pub urgent_gradient: Option<Gradient>,
+    #[knuffel(child, unwrap(argument))]
+    pub hide_titles: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub title_font_size: Option<FloatOrInt<0, 65535>>,
 }
 
 impl MergeWith<Self> for BorderRule {
@@ -777,25 +697,6 @@ impl MergeWith<Self> for BorderRule {
             (active_color, active_gradient),
             (inactive_color, inactive_gradient),
             (urgent_color, urgent_gradient),
-        );
-    }
-}
-
-impl MergeWith<Self> for BlurRule {
-    fn merge_with(&mut self, part: &Self) {
-        merge_on_off!((self, part));
-
-        merge_clone_opt!(
-            (self, part),
-            passes,
-            radius,
-            noise,
-            optimized,
-            brightness,
-            contrast,
-            saturation,
-            ignore_alpha,
-            x_ray
         );
     }
 }
@@ -818,6 +719,8 @@ impl MergeWith<Self> for ShadowRule {
 
 impl MergeWith<Self> for TabIndicatorRule {
     fn merge_with(&mut self, part: &Self) {
+        merge_clone_opt!((self, part), hide_titles, title_font_size);
+
         merge_color_gradient_opt!(
             (self, part),
             (active_color, active_gradient),

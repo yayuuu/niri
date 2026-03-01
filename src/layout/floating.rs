@@ -17,7 +17,6 @@ use super::{
 };
 use crate::animation::{Animation, Clock};
 use crate::niri_render_elements;
-use crate::render_helpers::blur::EffectsFramebuffersUserData;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::RenderTarget;
 use crate::utils::transaction::TransactionBlocker;
@@ -1143,9 +1142,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         focus_ring: bool,
 
         push: &mut dyn FnMut(FloatingSpaceRenderElement<R>),
-        force_optimized_blur: bool,
-        fx_buffers: Option<EffectsFramebuffersUserData>,
-        overview_zoom: f64,
     ) {
         let scale = Scale::from(self.scale);
 
@@ -1168,10 +1164,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
                 focus_ring,
                 target,
                 &mut |elem| push(elem.into()),
-                force_optimized_blur,
-                fx_buffers.clone(),
-                Some(overview_zoom),
-                false,
             );
         }
     }

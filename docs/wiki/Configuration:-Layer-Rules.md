@@ -19,12 +19,6 @@ layer-rule {
     opacity 0.5
     block-out-from "screencast"
     // block-out-from "screen-capture"
-    blur {
-        on
-        passes 2
-        radius 5
-        fps 30
-    }
 
     shadow {
         on
@@ -96,23 +90,6 @@ layer-rule {
     match namespace="^notifications$"
 
     block-out-from "screencast"
-}
-```
-
-#### `blur`
-
-Override blur options for the surface.
-These options match the [layout blur settings](./Configuration:-Layout.md#blur), including `fps` for true blur refresh rate.
-
-```kdl
-layer-rule {
-    match namespace="^launcher$"
-
-    blur {
-        on
-        optimized false
-        fps 30
-    }
 }
 ```
 

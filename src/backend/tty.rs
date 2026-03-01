@@ -64,7 +64,6 @@ use super::{IpcOutputMap, RenderResult};
 use crate::backend::OutputId;
 use crate::frame_clock::FrameClock;
 use crate::niri::{Niri, RedrawState, State};
-use crate::render_helpers::blur::EffectsFramebuffers;
 use crate::render_helpers::debug::draw_damage;
 use crate::render_helpers::render_data::RendererData;
 use crate::render_helpers::renderer::AsGlesRenderer;
@@ -1550,8 +1549,6 @@ impl Tty {
 
         niri.add_output(output.clone(), Some(refresh_interval(mode)), vrr_enabled);
 
-        let mut renderer = self.gpu_manager.single_renderer(&render_node)?;
-        EffectsFramebuffers::init_for_output(&output, &mut renderer, None);
 
         if niri.monitors_active {
             // Redraw the new monitor.
@@ -2491,7 +2488,7 @@ impl Tty {
 
         for (&node, device) in &mut self.devices {
             let scanner = &device.drm_scanner as *const DrmScanner;
-            let render_node = device.render_node.unwrap_or(self.primary_render_node);
+            let _render_node = device.render_node.unwrap_or(self.primary_render_node);
             let mut surfaces = mem::take(&mut device.surfaces);
             let mut powered = mem::take(&mut device.powered_down_surfaces);
             for (&crtc, surface) in surfaces.iter_mut().chain(powered.iter_mut()) {
@@ -2616,21 +2613,6 @@ impl Tty {
                         surface.compositor.vrr_enabled(),
                     );
                     niri.output_resized(&output);
-                    let renderer = self.gpu_manager.single_renderer(&render_node);
-                    match renderer {
-                        Ok(mut renderer) => {
-                            if let Err(e) =
-                                EffectsFramebuffers::update_for_output(&output, &mut renderer, None)
-                            {
-                                warn!("failed to update fx buffers after output resize: {e:?}");
-                            } else {
-                                EffectsFramebuffers::set_dirty(&output);
-                            }
-                        }
-                        Err(e) => {
-                            warn!("failed to get renderer after output resize: {e:?}");
-                        }
-                    }
                 }
             }
 

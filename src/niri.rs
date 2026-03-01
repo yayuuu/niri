@@ -141,16 +141,13 @@ use crate::layout::{
     HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement,
 };
 use crate::niri_render_elements;
-use crate::protocols::ext_background_effect::ExtBackgroundEffectManagerState;
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
 use crate::protocols::gamma_control::GammaControlManagerState;
-use crate::protocols::kde_blur::OrgKdeKwinBlurManagerState;
 use crate::protocols::mutter_x11_interop::MutterX11InteropManagerState;
 use crate::protocols::output_management::OutputManagementManagerState;
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer, ScreencopyManagerState};
 use crate::protocols::virtual_pointer::VirtualPointerManagerState;
-use crate::render_helpers::blur::{EffectsFramebuffers, EffectsFramebuffersUserData};
 use crate::render_helpers::debug::draw_opaque_regions;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
@@ -310,8 +307,6 @@ pub struct Niri {
     pub gamma_control_manager_state: GammaControlManagerState,
     pub activation_state: XdgActivationState,
     pub mutter_x11_interop_state: MutterX11InteropManagerState,
-    pub org_kde_kwin_blur_manager_state: OrgKdeKwinBlurManagerState,
-    pub ext_background_effect_manager_state: ExtBackgroundEffectManagerState,
 
     // This will not work as is outside of tests, so it is gated with #[cfg(test)] for now. In
     // particular, shaders will need to learn about the single pixel buffer. Also, it must be
@@ -1659,11 +1654,6 @@ impl State {
             *CHILD_DISPLAY.write().unwrap() = display_name;
         }
 
-        self.niri
-            .global_space
-            .outputs()
-            .for_each(EffectsFramebuffers::set_dirty);
-
         // Can't really update xdg-decoration settings since we have to hide the globals for CSD
         // due to the SDL2 bug... I don't imagine clients are prepared for the xdg-decoration
         // global suddenly appearing? Either way, right now it's live-reloaded in a sense that new
@@ -2273,12 +2263,6 @@ impl Niri {
         let mutter_x11_interop_state =
             MutterX11InteropManagerState::new::<State, _>(&display_handle, |_| true);
 
-        let org_kde_kwin_blur_manager_state =
-            OrgKdeKwinBlurManagerState::new::<State, _>(&display_handle, |_| true);
-
-        let ext_background_effect_manager_state =
-            ExtBackgroundEffectManagerState::new::<State, _>(&display_handle, |_| true);
-
         #[cfg(test)]
         let single_pixel_buffer_state = SinglePixelBufferState::new::<State>(&display_handle);
 
@@ -2473,8 +2457,6 @@ impl Niri {
             gamma_control_manager_state,
             activation_state,
             mutter_x11_interop_state,
-            org_kde_kwin_blur_manager_state,
-            ext_background_effect_manager_state,
             #[cfg(test)]
             single_pixel_buffer_state,
 
@@ -4129,7 +4111,6 @@ impl Niri {
 
         // Get layer-shell elements.
         let layer_map = layer_map_for_output(output);
-        let fx_buffers = EffectsFramebuffers::get_user_data(output);
 
         // We use macros instead of closures to avoid borrowing issues (renderer and push() go
         // into different functions).
@@ -4156,7 +4137,6 @@ impl Niri {
                     $layer,
                     $backdrop,
                     $push,
-                    fx_buffers.clone(),
                 );
             }};
             ($layer:expr, true) => {{
@@ -4242,20 +4222,6 @@ impl Niri {
         push_normal_from_layer!(Layer::Background, true);
 
         push(backdrop);
-
-        if let Some(mut fx_buffers) = EffectsFramebuffers::get(output) {
-            let blur_config = self.config.borrow().layout.blur;
-            if blur_config.radius.0 > 0. && blur_config.passes > 0 {
-                if let Err(e) = fx_buffers.update_optimized_blur_buffer(
-                    renderer.as_gles_renderer(),
-                    layer_map,
-                    output_scale,
-                    blur_config,
-                ) {
-                    error!("failed to update optimized blur buffer: {e:?}");
-                };
-            }
-        }
     }
 
     fn layers_in_render_order<'a>(
@@ -4285,10 +4251,9 @@ impl Niri {
         layer: Layer,
         for_backdrop: bool,
         push: &mut dyn FnMut(LayerSurfaceRenderElement<R>),
-        fx_buffers: Option<EffectsFramebuffersUserData>,
     ) {
         for (mapped, geo) in self.layers_in_render_order(layer_map, layer, for_backdrop) {
-            mapped.render_normal(renderer, geo.loc.to_f64(), target, push, fx_buffers.clone());
+            mapped.render_normal(renderer, geo.loc.to_f64(), target, push);
         }
     }
 

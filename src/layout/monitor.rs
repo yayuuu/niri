@@ -1399,6 +1399,10 @@ impl<W: LayoutElement> Monitor<W> {
         compute_overview_zoom(&self.options, progress)
     }
 
+    pub fn workspace_switch_in_progress(&self) -> bool {
+        self.workspace_switch.is_some()
+    }
+
     pub(super) fn set_overview_progress(&mut self, progress: Option<&super::OverviewProgress>) {
         let prev_render_idx = self.workspace_render_idx();
         self.overview_progress = progress.map(OverviewProgress::from);
@@ -1722,10 +1726,8 @@ impl<W: LayoutElement> Monitor<W> {
 
         let zoom = self.overview_zoom();
         let insert_hint_render_loc = self.insert_hint_render_loc;
-        let overview_open = self.overview_progress.is_some();
 
         for ((_idx, ws), geo) in self.workspaces_with_render_geo_idx() {
-            let force_optimized_blur = self.are_animations_ongoing() || overview_open;
             // Macro instead of closure because ws and insert hint have different elem types.
             macro_rules! push_elem {
                 () => {{
@@ -1751,8 +1753,6 @@ impl<W: LayoutElement> Monitor<W> {
                 target,
                 focus_ring,
                 push_elem!(),
-                zoom,
-                force_optimized_blur,
             );
 
             if let Some(loc) = insert_hint_render_loc {
@@ -1767,8 +1767,6 @@ impl<W: LayoutElement> Monitor<W> {
                 target,
                 focus_ring,
                 push_elem!(),
-                zoom,
-                force_optimized_blur,
             );
         }
     }

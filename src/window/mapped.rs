@@ -188,9 +188,6 @@ pub struct Mapped {
 
     /// Most recent monotonic time when the window had the focus.
     focus_timestamp: Option<Duration>,
-
-    /// Whether this window wants blur as specified by any of the wayland protocols.
-    proto_wants_blur: bool,
 }
 
 niri_render_elements! {
@@ -288,7 +285,6 @@ impl Mapped {
             is_pending_maximized: false,
             uncommitted_maximized: Vec::new(),
             focus_timestamp: None,
-            proto_wants_blur: false,
         };
 
         rv.is_maximized = rv.sizing_mode().is_maximized();
@@ -915,6 +911,10 @@ impl LayoutElement for Mapped {
         self.is_floating
     }
 
+    fn title(&self) -> Option<String> {
+        with_toplevel_role(self.toplevel(), |role| role.title.clone())
+    }
+
     fn set_bounds(&self, bounds: Size<i32, Logical>) {
         self.toplevel().with_pending_state(|state| {
             state.bounds = Some(bounds);
@@ -1337,18 +1337,5 @@ impl LayoutElement for Mapped {
                 true
             }
         });
-    }
-
-    fn title(&self) -> Option<String> {
-        with_toplevel_role(self.toplevel(), |role| role.title.clone())
-    }
-    ///
-    /// Set the preferred blurred state of this window.
-    fn set_proto_wants_blur(&mut self, new_blurred: bool) {
-        self.proto_wants_blur = new_blurred;
-    }
-
-    fn wants_blur(&self) -> bool {
-        !self.rules.blur.off && (self.rules.blur.on || self.proto_wants_blur)
     }
 }

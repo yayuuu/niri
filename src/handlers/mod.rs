@@ -74,15 +74,13 @@ use smithay::{
 
 pub use crate::handlers::xdg_shell::KdeDecorationsModeState;
 use crate::layout::workspace::WorkspaceId;
-use crate::layout::{ActivateWindow, LayoutElement as _};
+use crate::layout::ActivateWindow;
 use crate::niri::{DndIcon, NewClient, State};
-use crate::protocols::ext_background_effect::ExtBackgroundEffectManagerHandler;
 use crate::protocols::ext_workspace::{self, ExtWorkspaceHandler, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{
     self, ForeignToplevelHandler, ForeignToplevelManagerState,
 };
 use crate::protocols::gamma_control::{GammaControlHandler, GammaControlManagerState};
-use crate::protocols::kde_blur::OrgKdeKwinBlurManagerHandler;
 use crate::protocols::mutter_x11_interop::MutterX11InteropHandler;
 use crate::protocols::output_management::{OutputManagementHandler, OutputManagementManagerState};
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
@@ -93,9 +91,9 @@ use crate::protocols::virtual_pointer::{
 };
 use crate::utils::{output_size, send_scale_transform};
 use crate::{
-    delegate_ext_background_effect, delegate_ext_workspace, delegate_foreign_toplevel,
-    delegate_gamma_control, delegate_mutter_x11_interop, delegate_org_kde_kwin_blur,
-    delegate_output_management, delegate_screencopy, delegate_virtual_pointer,
+    delegate_ext_workspace, delegate_foreign_toplevel, delegate_gamma_control,
+    delegate_mutter_x11_interop, delegate_output_management, delegate_screencopy,
+    delegate_virtual_pointer,
 };
 use dnd_fix::WorkaroundDndGrab;
 
@@ -849,61 +847,3 @@ impl MutterX11InteropHandler for State {}
 delegate_mutter_x11_interop!(State);
 
 delegate_single_pixel_buffer!(State);
-
-impl OrgKdeKwinBlurManagerHandler for State {
-    fn org_kde_kwin_blur_manager_state(
-        &mut self,
-    ) -> &mut crate::protocols::kde_blur::OrgKdeKwinBlurManagerState {
-        &mut self.niri.org_kde_kwin_blur_manager_state
-    }
-
-    fn enable_blur(&mut self, surface: &WlSurface) {
-        if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(surface) {
-            mapped.set_proto_wants_blur(true);
-            self.niri.queue_redraw_all();
-        } else if let Some(layer) = self
-            .niri
-            .mapped_layer_surfaces
-            .values_mut()
-            .find(|l| l.surface().wl_surface() == surface)
-        {
-            layer.set_blurred(true);
-        } else {
-            trace!("tried to blur unmapped surface: {}", surface.id());
-        }
-    }
-
-    fn disable_blur(&mut self, surface: &WlSurface) {
-        if let Some((mapped, _)) = self.niri.layout.find_window_and_output_mut(surface) {
-            mapped.set_proto_wants_blur(false);
-            self.niri.queue_redraw_all();
-        } else if let Some(layer) = self
-            .niri
-            .mapped_layer_surfaces
-            .values_mut()
-            .find(|l| l.surface().wl_surface() == surface)
-        {
-            layer.set_blurred(false);
-        } else {
-            trace!("tried to un-blur unmapped surface: {}", surface.id());
-        }
-    }
-}
-delegate_org_kde_kwin_blur!(State);
-
-impl ExtBackgroundEffectManagerHandler for State {
-    fn ext_background_effect_manager_state(
-        &mut self,
-    ) -> &mut crate::protocols::ext_background_effect::ExtBackgroundEffectManagerState {
-        &mut self.niri.ext_background_effect_manager_state
-    }
-
-    fn enable_blur(&mut self, surface: &WlSurface) {
-        <Self as OrgKdeKwinBlurManagerHandler>::enable_blur(self, surface);
-    }
-
-    fn disable_blur(&mut self, surface: &WlSurface) {
-        <Self as OrgKdeKwinBlurManagerHandler>::disable_blur(self, surface);
-    }
-}
-delegate_ext_background_effect!(State);

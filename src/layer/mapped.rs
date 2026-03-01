@@ -1,25 +1,20 @@
 use niri_config::utils::MergeWith as _;
 use niri_config::{Config, LayerRule};
-use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::desktop::{LayerSurface, PopupManager};
-use smithay::utils::{Logical, Point, Rectangle, Scale, Size, Transform};
+use smithay::utils::{Logical, Point, Scale, Size};
 use smithay::wayland::shell::wlr_layer::{ExclusiveZone, Layer};
 
 use super::ResolvedLayerRules;
 use crate::animation::Clock;
 use crate::layout::shadow::Shadow;
 use crate::niri_render_elements;
-use crate::render_helpers::blur::element::{Blur, BlurRenderElement, CommitTracker};
-use crate::render_helpers::blur::EffectsFramebuffersUserData;
-use crate::render_helpers::clipped_surface::ClippedSurfaceRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::shadow::ShadowRenderElement;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::surface::push_elements_from_surface_tree;
-use crate::render_helpers::{render_to_texture, RenderTarget};
+use crate::render_helpers::RenderTarget;
 use crate::utils::{baba_is_float_offset, round_logical_in_physical};
 
 #[derive(Debug)]
@@ -36,13 +31,6 @@ pub struct MappedLayer {
     /// The shadow around the surface.
     shadow: Shadow,
 
-    /// Configuration for this layer's blur.
-    blur: Blur,
-
-    /// Size (used for blur).
-    // TODO: move to standalone blur struct
-    size: Size<f64, Logical>,
-
     /// The view size for the layer surface's output.
     view_size: Size<f64, Logical>,
 
@@ -58,8 +46,6 @@ niri_render_elements! {
         Wayland = WaylandSurfaceRenderElement<R>,
         SolidColor = SolidColorRenderElement,
         Shadow = ShadowRenderElement,
-        Blur = BlurRenderElement,
-        ClippedBlur = ClippedSurfaceRenderElement<BlurRenderElement>,
     }
 }
 
@@ -72,14 +58,10 @@ impl MappedLayer {
         clock: Clock,
         config: &Config,
     ) -> Self {
-        // Shadows and blur for layer surfaces need to be explicitly enabled.
         let mut shadow_config = config.layout.shadow;
+        // Shadows for layer surfaces need to be explicitly enabled.
         shadow_config.on = false;
         shadow_config.merge_with(&rules.shadow);
-
-        let mut blur_config = config.layout.blur;
-        blur_config.on = false;
-        blur_config.merge_with(&rules.blur);
 
         Self {
             surface,
@@ -89,22 +71,15 @@ impl MappedLayer {
             scale,
             shadow: Shadow::new(shadow_config),
             clock,
-            blur: Blur::new(blur_config),
-            size: Size::default(),
         }
     }
 
     pub fn update_config(&mut self, config: &Config) {
-        // Shadows and blur for layer surfaces need to be explicitly enabled.
         let mut shadow_config = config.layout.shadow;
+        // Shadows for layer surfaces need to be explicitly enabled.
         shadow_config.on = false;
         shadow_config.merge_with(&self.rules.shadow);
         self.shadow.update_config(shadow_config);
-
-        let mut blur_config = config.layout.blur;
-        blur_config.on = false;
-        blur_config.merge_with(&self.rules.blur);
-        self.blur.update_config(blur_config);
     }
 
     pub fn update_shaders(&mut self) {
@@ -122,16 +97,12 @@ impl MappedLayer {
             .to_physical_precise_round(self.scale)
             .to_logical(self.scale);
 
-        self.size = size;
-
         self.block_out_buffer.resize(size);
 
         let radius = self.rules.geometry_corner_radius.unwrap_or_default();
         // FIXME: is_active based on keyboard focus?
         self.shadow
             .update_render_elements(size, true, radius, self.scale, 1.);
-
-        self.blur.update_render_elements(self.rules.blur.on);
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
@@ -190,31 +161,27 @@ impl MappedLayer {
         location: Point<f64, Logical>,
         target: RenderTarget,
         push: &mut dyn FnMut(LayerSurfaceRenderElement<R>),
-        fx_buffers: Option<EffectsFramebuffersUserData>,
     ) {
         let scale = Scale::from(self.scale);
         let alpha = self.rules.opacity.unwrap_or(1.).clamp(0., 1.);
         let location = location + self.bob_offset();
 
-        let mut elems: Vec<LayerSurfaceRenderElement<R>> = Vec::new();
-
-        // Normal surface elements used to render a texture for the ignore alpha pass inside the
-        // blur shader.
-        let ignore_alpha = self.rules.blur.ignore_alpha.unwrap_or_default().0;
-        let mut gles_elems: Option<Vec<LayerSurfaceRenderElement<GlesRenderer>>> = None;
-        let mut update_alpha_tex = ignore_alpha > 0.;
-
         if target.should_block_out(self.rules.block_out_from) {
+            // Round to physical pixels.
             let location = location.to_physical_precise_round(scale).to_logical(scale);
+
+            // FIXME: take geometry-corner-radius into account.
             let elem = SolidColorRenderElement::from_buffer(
                 &self.block_out_buffer,
                 location,
                 alpha,
                 Kind::Unspecified,
             );
-            elems.push(elem.into());
+            push(elem.into());
         } else {
+            // Layer surfaces don't have extra geometry like windows.
             let buf_pos = location;
+
             let surface = self.surface.wl_surface();
             push_elements_from_surface_tree(
                 renderer,
@@ -223,90 +190,13 @@ impl MappedLayer {
                 scale,
                 alpha,
                 Kind::ScanoutCandidate,
-                &mut |elem| elems.push(elem.into()),
+                &mut |elem| push(elem.into()),
             );
-
-            if ignore_alpha > 0.
-                && self
-                    .blur
-                    .maybe_update_commit_tracker(CommitTracker::from_elements(elems.iter()))
-            {
-                let mut gles = Vec::new();
-                push_elements_from_surface_tree(
-                    renderer.as_gles_renderer(),
-                    surface,
-                    buf_pos.to_physical_precise_round(scale),
-                    scale,
-                    alpha,
-                    Kind::ScanoutCandidate,
-                    &mut |elem| gles.push(elem.into()),
-                );
-                gles_elems = Some(gles);
-            } else {
-                update_alpha_tex = false;
-            }
         }
-
-        let blur_elem = (matches!(self.surface.layer(), Layer::Top | Layer::Overlay)
-            && !target.should_block_out(self.rules.block_out_from))
-        .then(|| {
-            let fx_buffers = fx_buffers?;
-
-            let alpha_tex = gles_elems
-                .and_then(|gles_elems| {
-                    let fx_buffers = fx_buffers.borrow();
-
-                    render_to_texture(
-                        renderer.as_gles_renderer(),
-                        fx_buffers.output_size(),
-                        self.scale.into(),
-                        Transform::Normal,
-                        Fourcc::Abgr8888,
-                        gles_elems.into_iter(),
-                    )
-                    .inspect_err(|e| warn!("failed to render alpha tex for layer surface: {e:?}"))
-                    .ok()
-                })
-                .map(|r| r.0);
-
-            if update_alpha_tex {
-                if let Some(alpha_tex) = alpha_tex {
-                    self.blur.set_alpha_tex(alpha_tex);
-                } else {
-                    self.blur.clear_alpha_tex();
-                }
-            }
-
-            let blur_sample_area = Rectangle::new(location, self.size).to_i32_round();
-            let geo = Rectangle::new(location, blur_sample_area.size.to_f64());
-
-            self.blur
-                .render(
-                    renderer.as_gles_renderer(),
-                    fx_buffers,
-                    blur_sample_area,
-                    self.rules.geometry_corner_radius.unwrap_or_default(),
-                    self.scale,
-                    geo,
-                    false,
-                    !self.rules.blur.x_ray.unwrap_or_default(),
-                    blur_sample_area.loc.to_f64(),
-                    None,
-                    None,
-                )
-                .map(Into::into)
-        })
-        .flatten()
-        .into_iter();
 
         let location = location.to_physical_precise_round(scale).to_logical(scale);
         self.shadow
-            .render(renderer, location, &mut |elem| elems.push(elem.into()));
-        elems.extend(blur_elem);
-
-        for elem in elems {
-            push(elem);
-        }
+            .render(renderer, location, &mut |elem| push(elem.into()));
     }
 
     pub fn render_popups<R: NiriRenderer>(
@@ -341,12 +231,6 @@ impl MappedLayer {
                 Kind::ScanoutCandidate,
                 &mut |elem| push(elem.into()),
             );
-        }
-    }
-
-    pub fn set_blurred(&mut self, new_blurred: bool) {
-        if !self.rules.blur.off {
-            self.rules.blur.on = new_blurred;
         }
     }
 }

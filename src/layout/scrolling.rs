@@ -19,7 +19,6 @@ use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::SizingMode;
 use crate::niri_render_elements;
-use crate::render_helpers::blur::EffectsFramebuffersUserData;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::RenderTarget;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
@@ -3492,9 +3491,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         target: RenderTarget,
         focus_ring: bool,
         push: &mut dyn FnMut(ScrollingSpaceRenderElement<R>),
-        force_optimized_blur: bool,
-        fx_buffers: Option<EffectsFramebuffersUserData>,
-        overview_zoom: f64,
     ) {
         let scale = Scale::from(self.scale);
 
@@ -3535,10 +3531,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     focus_ring,
                     target,
                     &mut |elem| push(elem.into()),
-                    force_optimized_blur,
-                    fx_buffers.clone(),
-                    Some(overview_zoom),
-                    false,
                 );
             }
         }

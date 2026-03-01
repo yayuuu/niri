@@ -22,8 +22,6 @@ use crate::animation::{Animation, Clock};
 use crate::layout::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
 use crate::layout::SizingMode;
 use crate::niri_render_elements;
-use crate::render_helpers::blur::element::{Blur, BlurRenderElement};
-use crate::render_helpers::blur::EffectsFramebuffersUserData;
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::clipped_surface::{ClippedSurfaceRenderElement, RoundedCornerDamage};
 use crate::render_helpers::damage::ExtraDamage;
@@ -407,9 +405,6 @@ pub struct Tile<W: LayoutElement> {
     /// window still having to adjust, which causes a jerking visual without this compensation.
     window_size_override: WindowSizeOverride,
 
-    /// This tile's blur settings.
-    blur: Blur,
-
     /// Clock for driving animations.
     pub(super) clock: Clock,
 
@@ -420,19 +415,17 @@ pub struct Tile<W: LayoutElement> {
 niri_render_elements! {
     TileRenderElement<R> => {
         LayoutElement = LayoutElementRenderElement<R>,
-        FocusRing = FocusRingRenderElement,
-        SolidColor = SolidColorRenderElement,
-        Opening = OpeningWindowRenderElement,
-        Resize = ResizeRenderElement,
-        Border = BorderRenderElement,
-        Shadow = ShadowRenderElement,
-        Blur = BlurRenderElement,
-        BlurClippedSurface = ClippedSurfaceRenderElement<BlurRenderElement>,
-        ClippedSurface = ClippedSurfaceRenderElement<WaylandSurfaceRenderElement<R>>,
-        Offscreen = OffscreenRenderElement,
-        ExtraDamage = ExtraDamage,
-        TabIndicator = TabIndicatorRenderElement,
-    }
+    FocusRing = FocusRingRenderElement,
+    SolidColor = SolidColorRenderElement,
+    Opening = OpeningWindowRenderElement,
+    Resize = ResizeRenderElement,
+    Border = BorderRenderElement,
+    Shadow = ShadowRenderElement,
+    ClippedSurface = ClippedSurfaceRenderElement<WaylandSurfaceRenderElement<R>>,
+    Offscreen = OffscreenRenderElement,
+    ExtraDamage = ExtraDamage,
+    TabIndicator = TabIndicatorRenderElement,
+}
 }
 
 pub type TileRenderSnapshot =
@@ -488,17 +481,11 @@ impl<W: LayoutElement> Tile<W> {
         let sizing_mode = window.sizing_mode();
         let tab_indicator_config = options.layout.tab_indicator;
 
-        // Blur needs to be enabled explicitly
-        let mut blur_config = options.layout.blur;
-        blur_config.on = false;
-        blur_config.merge_with(&rules.blur);
-
         Self {
             window: WindowInner::Single(Some(window)),
             border: FocusRing::new(border_config.into()),
             focus_ring: FocusRing::new(focus_ring_config),
             shadow: Shadow::new(shadow_config),
-            blur: Blur::new(blur_config),
             sizing_mode,
             fullscreen_backdrop: SolidColorBuffer::new((0., 0.), [0., 0., 0., 1.]),
             restore_to_floating: false,
@@ -562,12 +549,6 @@ impl<W: LayoutElement> Tile<W> {
 
         self.tab_indicator
             .update_config(self.options.layout.tab_indicator);
-
-        // Blur needs to be enabled explicitly
-        let mut blur_config = self.options.layout.blur;
-        blur_config.on = false;
-        blur_config.merge_with(&rules.blur);
-        self.blur.update_config(blur_config);
     }
 
     pub fn update_shaders(&mut self) {
@@ -848,9 +829,6 @@ impl<W: LayoutElement> Tile<W> {
         );
 
         self.fullscreen_backdrop.resize(animated_tile_size);
-
-        self.blur
-            .update_render_elements(self.focused_window().wants_blur());
 
         match &self.window {
             WindowInner::Single(_) => {
@@ -1603,14 +1581,9 @@ impl<W: LayoutElement> Tile<W> {
         &self,
         renderer: &mut R,
         location: Point<f64, Logical>,
-        real_location: Point<f64, Logical>,
         focus_ring: bool,
         target: RenderTarget,
         push: &mut dyn FnMut(TileRenderElement<R>),
-        force_optimized_blur_global: bool,
-        fx_buffers: Option<EffectsFramebuffersUserData>,
-        overview_zoom: Option<f64>,
-        overview_zoom_use_render_loc_center: bool,
     ) {
         let _span = tracy_client::span!("Tile::render_inner");
 
@@ -1648,11 +1621,6 @@ impl<W: LayoutElement> Tile<W> {
         let window_render_loc = location + window_loc;
         let area = Rectangle::new(window_render_loc, animated_window_size);
 
-        let blur_sample_area = Rectangle::new(
-            real_location + window_loc + tab_indicator_offset,
-            animated_window_size,
-        );
-
         self.window_size_override.increment();
 
         let rules = self.window.focused_window().rules();
@@ -1663,7 +1631,7 @@ impl<W: LayoutElement> Tile<W> {
             .scaled_by(1. - expanded_progress as f32);
         let has_border_shader = BorderRenderElement::has_shader(renderer);
         let geo = Rectangle::new(window_render_loc, window_size);
-        let animated_geo = Rectangle::new(window_render_loc, animated_window_size);
+        let _animated_geo = Rectangle::new(window_render_loc, animated_window_size);
 
         // Popups go on top.
         self.window.focused_window().render_popups(
@@ -1879,33 +1847,6 @@ impl<W: LayoutElement> Tile<W> {
                 .render(renderer, location, &mut |elem| push(elem.into()));
         }
 
-        if let Some(fx_buffers) = fx_buffers {
-            let force_optimized_blur = (self.are_animations_ongoing()
-                || force_optimized_blur_global)
-                && !self.focused_window().is_floating();
-            let overview_zoom_center = if overview_zoom_use_render_loc_center {
-                Some(window_render_loc)
-            } else {
-                None
-            };
-            if let Some(elem) = self.blur.render(
-                renderer.as_gles_renderer(),
-                fx_buffers.clone(),
-                blur_sample_area.to_i32_round(),
-                radius,
-                self.scale,
-                animated_geo,
-                force_optimized_blur,
-                self.focused_window().is_floating()
-                    && !self.focused_window().rules().blur.x_ray.unwrap_or_default(),
-                window_render_loc,
-                overview_zoom,
-                overview_zoom_center,
-            ) {
-                push(elem.into());
-            }
-        }
-
         if expanded_progress < 1. {
             self.shadow
                 .render(renderer, location, &mut |elem| push(elem.into()));
@@ -1919,10 +1860,6 @@ impl<W: LayoutElement> Tile<W> {
         focus_ring: bool,
         target: RenderTarget,
         push: &mut dyn FnMut(TileRenderElement<R>),
-        force_optimized_blur_global: bool,
-        fx_buffers: Option<EffectsFramebuffersUserData>,
-        overview_zoom: Option<f64>,
-        overview_zoom_use_render_loc_center: bool,
     ) {
         let _span = tracy_client::span!("Tile::render");
 
@@ -1942,14 +1879,9 @@ impl<W: LayoutElement> Tile<W> {
             self.render_inner(
                 renderer,
                 Point::from((0., 0.)),
-                location,
                 focus_ring,
                 target,
                 &mut |elem| elements.push(elem),
-                force_optimized_blur_global,
-                fx_buffers.clone(),
-                overview_zoom,
-                overview_zoom_use_render_loc_center,
             );
             match open.render(
                 renderer,
@@ -1974,14 +1906,9 @@ impl<W: LayoutElement> Tile<W> {
             self.render_inner(
                 renderer,
                 Point::from((0., 0.)),
-                location,
                 focus_ring,
                 target,
                 &mut |elem| elements.push(elem),
-                force_optimized_blur_global,
-                fx_buffers.clone(),
-                overview_zoom,
-                overview_zoom_use_render_loc_center,
             );
             match alpha.offscreen.render(renderer, scale, &elements) {
                 Ok((elem, _sync, data)) => {
@@ -2002,14 +1929,9 @@ impl<W: LayoutElement> Tile<W> {
             self.render_inner(
                 renderer,
                 location,
-                location,
                 focus_ring,
                 target,
                 push,
-                force_optimized_blur_global,
-                fx_buffers,
-                overview_zoom,
-                overview_zoom_use_render_loc_center,
             );
         }
     }
@@ -2031,10 +1953,6 @@ impl<W: LayoutElement> Tile<W> {
             false,
             RenderTarget::Output,
             &mut |elem| contents.push(elem),
-            false,
-            None,
-            None,
-            false,
         );
 
         // A bit of a hack to render blocked out as for screencast, but I think it's fine here.
@@ -2045,10 +1963,6 @@ impl<W: LayoutElement> Tile<W> {
             false,
             RenderTarget::Screencast,
             &mut |elem| blocked_out_contents.push(elem),
-            false,
-            None,
-            None,
-            false,
         );
 
         RenderSnapshot {

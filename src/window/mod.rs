@@ -3,7 +3,7 @@ use std::cmp::{max, min};
 use niri_config::utils::MergeWith as _;
 use niri_config::window_rule::{Match, WindowRule};
 use niri_config::{
-    BlockOutFrom, BlurRule, BorderRule, CornerRadius, FloatingPosition, PresetSize, ShadowRule,
+    BlockOutFrom, BorderRule, CornerRadius, FloatingPosition, PresetSize, ShadowRule,
     TabIndicatorRule,
 };
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -84,8 +84,6 @@ pub struct ResolvedWindowRules {
     pub border: BorderRule,
     /// Shadow overrides.
     pub shadow: ShadowRule,
-    /// Blur overrides.
-    pub blur: BlurRule,
     /// Tab indicator overrides.
     pub tab_indicator: TabIndicatorRule,
 
@@ -262,7 +260,6 @@ impl ResolvedWindowRules {
                 resolved.border.merge_with(&rule.border);
                 resolved.shadow.merge_with(&rule.shadow);
                 resolved.tab_indicator.merge_with(&rule.tab_indicator);
-                resolved.blur.merge_with(&rule.blur);
 
                 if let Some(x) = rule.draw_border_with_background {
                     resolved.draw_border_with_background = Some(x);
