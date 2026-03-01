@@ -5850,8 +5850,10 @@ mod tests {
     use niri_config::FloatOrInt;
     use smithay::output::Output;
     use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+    use smithay::utils::Transform;
 
     use super::*;
+    use crate::layout::{ConfigureIntent, LayoutElementRenderSnapshot};
     use crate::render_helpers::offscreen::OffscreenData;
     use crate::utils::round_logical_in_physical;
 
@@ -5981,6 +5983,28 @@ mod tests {
         }
 
         fn on_commit(&mut self, _serial: Serial) {}
+
+        fn set_active_in_column(&mut self, _active: bool) {}
+
+        fn set_floating(&mut self, _floating: bool) {}
+
+        fn is_floating(&self) -> bool {
+            false
+        }
+
+        fn is_ignoring_opacity_window_rule(&self) -> bool {
+            false
+        }
+
+        fn is_urgent(&self) -> bool {
+            false
+        }
+
+        fn configure_intent(&self) -> ConfigureIntent {
+            ConfigureIntent::NotNeeded
+        }
+
+        fn send_pending_configure(&mut self) {}
     }
 
     #[test]
@@ -6014,10 +6038,15 @@ mod tests {
 
     #[test]
     fn align_left_after_growth_respects_left_strut() {
-        let mut layout = niri_config::Layout::default();
-        layout.always_center_single_column = true;
-        layout.gaps = 8.;
-        layout.struts.left = FloatOrInt(100.);
+        let layout = niri_config::Layout {
+            always_center_single_column: true,
+            gaps: 8.,
+            struts: Struts {
+                left: FloatOrInt(100.),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         let options = Rc::new(Options {
             layout,

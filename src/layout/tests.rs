@@ -428,6 +428,7 @@ enum Op {
         #[proptest(strategy = "prop::option::of(arbitrary_layout_part().prop_map(Box::new))")]
         layout_config: Option<Box<niri_config::LayoutPart>>,
     },
+    ToggleColumnTabbedDisplay,
     AddNamedWorkspace {
         #[proptest(strategy = "1..=5usize")]
         ws_name: usize,
@@ -860,6 +861,9 @@ impl Op {
                 };
 
                 mon.update_layout_config(layout_config.map(|x| *x));
+            }
+            Op::ToggleColumnTabbedDisplay => {
+                // No-op placeholder for removed action; keep tests compiling.
             }
             Op::AddNamedWorkspace {
                 ws_name,

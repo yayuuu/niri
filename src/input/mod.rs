@@ -5387,11 +5387,11 @@ mod tests {
         }]);
 
         let mut common_state = create_test_state();
-        let mut mods: ModifiersState = Default::default();
-
-        // Action press/release.
-        mods.logo = true;
-        mods.ctrl = true;
+        let mut mods: ModifiersState = ModifiersState {
+            logo: true,
+            ctrl: true,
+            ..Default::default()
+        };
         let filter = process_close_key(&mut common_state, &bindings, mods, true);
         assert_matches!(
             filter,
@@ -5575,7 +5575,7 @@ mod tests {
             })
         );
         assert!(common_state.suppressed_keys.is_empty());
-        assert!(mods.logo == false);
+        assert!(!mods.logo);
 
         // But not if a different key has been pressed in between
         let result = process_mod_key(&mut common_state, &bindings, &mut mods, true);
