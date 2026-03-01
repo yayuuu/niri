@@ -3,7 +3,7 @@ use niri_config::CornerRadius;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::gles::{
-    ffi, GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
+    GlesError, GlesFrame, GlesRenderer, GlesTexProgram, Uniform,
 };
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
@@ -14,16 +14,12 @@ use super::shaders::{mat3_uniform, Shaders};
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
 
 #[derive(Debug)]
-pub struct ClippedSurfaceRenderElement<E>
-where
-    E: Element,
-{
-    inner: E,
+pub struct ClippedSurfaceRenderElement<R: NiriRenderer> {
+    inner: WaylandSurfaceRenderElement<R>,
     program: GlesTexProgram,
     corner_radius: CornerRadius,
     geometry: Rectangle<f64, Logical>,
-    uniforms: Vec<Uniform<'static>>,
-    alpha_tex: Option<GlesTexture>,
+    scale: f32,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -32,63 +28,42 @@ pub struct RoundedCornerDamage {
     corner_radius: CornerRadius,
 }
 
-impl<E> ClippedSurfaceRenderElement<E>
-where
-    E: Element,
-{
-    pub fn shader<R: NiriRenderer>(renderer: &mut R) -> Option<&GlesTexProgram> {
-        Shaders::get(renderer).clipped_surface.as_ref()
-    }
-
-    pub fn from_wayland<R: NiriRenderer>(
+impl<R: NiriRenderer> ClippedSurfaceRenderElement<R> {
+    pub fn new(
         elem: WaylandSurfaceRenderElement<R>,
         scale: Scale<f64>,
         geometry: Rectangle<f64, Logical>,
         program: GlesTexProgram,
         corner_radius: CornerRadius,
-    ) -> ClippedSurfaceRenderElement<WaylandSurfaceRenderElement<R>> {
-        let view_src = elem.view().src;
-        let buf_size = elem.buffer_size();
-        ClippedSurfaceRenderElement::new(
-            elem,
-            view_src,
-            buf_size,
-            scale,
-            geometry,
+    ) -> Self {
+        Self {
+            inner: elem,
             program,
             corner_radius,
-            None,
-            0.,
-        )
+            geometry,
+            scale: scale.x as f32,
+        }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        elem: E,
-        view_src: Rectangle<f64, Logical>,
-        buf_size: Size<i32, Logical>,
-        scale: Scale<f64>,
-        geometry: Rectangle<f64, Logical>,
-        program: GlesTexProgram,
-        corner_radius: CornerRadius,
-        alpha_tex: Option<GlesTexture>,
-        ignore_alpha: f64,
-    ) -> Self {
-        let elem_geo = elem.geometry(scale);
+    fn compute_uniforms(&self) -> Vec<Uniform<'static>> {
+        let scale = Scale::from(f64::from(self.scale));
+        let elem_geo = self.inner.geometry(scale);
 
         let elem_geo_loc = Vec2::new(elem_geo.loc.x as f32, elem_geo.loc.y as f32);
         let elem_geo_size = Vec2::new(elem_geo.size.w as f32, elem_geo.size.h as f32);
 
-        let geo = geometry.to_physical_precise_round(scale);
+        let geo = self.geometry.to_physical_precise_round(scale);
         let geo_loc = Vec2::new(geo.loc.x, geo.loc.y);
         let geo_size = Vec2::new(geo.size.w, geo.size.h);
 
+        let buf_size = self.inner.buffer_size();
         let buf_size = Vec2::new(buf_size.w as f32, buf_size.h as f32);
 
-        let src_loc = Vec2::new(view_src.loc.x as f32, view_src.loc.y as f32);
-        let src_size = Vec2::new(view_src.size.w as f32, view_src.size.h as f32);
+        let view = self.inner.view();
+        let src_loc = Vec2::new(view.src.loc.x as f32, view.src.loc.y as f32);
+        let src_size = Vec2::new(view.src.size.w as f32, view.src.size.h as f32);
 
-        let transform = elem.transform();
+        let transform = self.inner.transform();
         // HACK: ??? for some reason flipped ones are fine.
         let transform = match transform {
             Transform::_90 => Transform::_270,
@@ -106,34 +81,22 @@ where
             * Mat3::from_scale(buf_size / src_size)
             * Mat3::from_translation(-src_loc / buf_size);
 
-        let mut uniforms = vec![
-            Uniform::new("niri_scale", scale.x as f32),
-            Uniform::new("geo_size", (geometry.size.w as f32, geometry.size.h as f32)),
-            Uniform::new("corner_radius", <[f32; 4]>::from(corner_radius)),
+        let geo_size = (self.geometry.size.w as f32, self.geometry.size.h as f32);
+
+        vec![
+            Uniform::new("niri_scale", self.scale),
+            Uniform::new("geo_size", geo_size),
+            Uniform::new("corner_radius", <[f32; 4]>::from(self.corner_radius)),
             mat3_uniform("input_to_geo", input_to_geo),
-        ];
-
-        if alpha_tex.is_some() && ignore_alpha > 0. {
-            uniforms.push(Uniform::new("alpha_tex", 1));
-            uniforms.push(Uniform::new("ignore_alpha", ignore_alpha as f32));
-        }
-
-        Self {
-            inner: elem,
-            program,
-            corner_radius,
-            geometry,
-            uniforms,
-            alpha_tex,
-        }
+        ]
     }
 
-    fn compute_uniforms(&self) -> Vec<Uniform<'static>> {
-        self.uniforms.clone()
+    pub fn shader(renderer: &mut R) -> Option<&GlesTexProgram> {
+        Shaders::get(renderer).clipped_surface.as_ref()
     }
 
     pub fn will_clip(
-        elem: &E,
+        elem: &WaylandSurfaceRenderElement<R>,
         scale: Scale<f64>,
         geometry: Rectangle<f64, Logical>,
         corner_radius: CornerRadius,
@@ -183,10 +146,7 @@ where
     }
 }
 
-impl<E> Element for ClippedSurfaceRenderElement<E>
-where
-    E: Element,
-{
+impl<R: NiriRenderer> Element for ClippedSurfaceRenderElement<R> {
     fn id(&self) -> &Id {
         self.inner.id()
     }
@@ -260,10 +220,7 @@ where
     }
 }
 
-impl<E> RenderElement<GlesRenderer> for ClippedSurfaceRenderElement<E>
-where
-    E: RenderElement<GlesRenderer>,
-{
+impl RenderElement<GlesRenderer> for ClippedSurfaceRenderElement<GlesRenderer> {
     fn draw(
         &self,
         frame: &mut GlesFrame<'_, '_>,
@@ -273,16 +230,6 @@ where
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
         frame.override_default_tex_program(self.program.clone(), self.compute_uniforms());
-
-        if let Some(alpha_tex) = &self.alpha_tex {
-            frame.with_context(|gl| unsafe {
-                gl.ActiveTexture(ffi::TEXTURE1);
-                gl.BindTexture(ffi::TEXTURE_2D, alpha_tex.tex_id());
-                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
-                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
-            })?;
-        }
-
         RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions)?;
         frame.clear_tex_program_override();
         Ok(())
@@ -295,9 +242,8 @@ where
     }
 }
 
-impl<'render, E> RenderElement<TtyRenderer<'render>> for ClippedSurfaceRenderElement<E>
-where
-    E: RenderElement<TtyRenderer<'render>>,
+impl<'render> RenderElement<TtyRenderer<'render>>
+    for ClippedSurfaceRenderElement<TtyRenderer<'render>>
 {
     fn draw(
         &self,
@@ -310,16 +256,6 @@ where
         frame
             .as_gles_frame()
             .override_default_tex_program(self.program.clone(), self.compute_uniforms());
-
-        if let Some(alpha_tex) = &self.alpha_tex {
-            frame.as_gles_frame().with_context(|gl| unsafe {
-                gl.ActiveTexture(ffi::TEXTURE1);
-                gl.BindTexture(ffi::TEXTURE_2D, alpha_tex.tex_id());
-                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
-                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
-            })?;
-        }
-
         RenderElement::draw(&self.inner, frame, src, dst, damage, opaque_regions)?;
         frame.as_gles_frame().clear_tex_program_override();
         Ok(())
@@ -336,10 +272,6 @@ where
 }
 
 impl RoundedCornerDamage {
-    pub fn set_size(&mut self, size: Size<f64, Logical>) {
-        self.damage.set_size(size);
-    }
-
     pub fn set_corner_radius(&mut self, corner_radius: CornerRadius) {
         if self.corner_radius == corner_radius {
             return;
@@ -350,7 +282,7 @@ impl RoundedCornerDamage {
         self.damage.damage_all();
     }
 
-    pub fn element(&self) -> ExtraDamage {
-        self.damage.clone()
+    pub fn render(&self, geometry: Rectangle<f64, Logical>) -> ExtraDamage {
+        self.damage.render(geometry)
     }
 }

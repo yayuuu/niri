@@ -369,6 +369,8 @@ pub enum Action {
     SetDynamicCastWindowById(u64),
     SetDynamicCastMonitor(#[knuffel(argument)] Option<String>),
     ClearDynamicCastTarget,
+    #[knuffel(skip)]
+    StopCast(u64),
     ToggleOverview,
     OpenOverview,
     CloseOverview,
@@ -379,7 +381,7 @@ pub enum Action {
     #[knuffel(skip)]
     UnsetWindowUrgent(u64),
     #[knuffel(skip)]
-    LoadConfigFile,
+    LoadConfigFile(#[knuffel(argument)] Option<String>),
     #[knuffel(skip)]
     MruAdvance {
         direction: MruDirection,
@@ -702,13 +704,14 @@ impl From<niri_ipc::Action> for Action {
                 Self::SetDynamicCastMonitor(output)
             }
             niri_ipc::Action::ClearDynamicCastTarget {} => Self::ClearDynamicCastTarget,
+            niri_ipc::Action::StopCast { session_id } => Self::StopCast(session_id),
             niri_ipc::Action::ToggleOverview {} => Self::ToggleOverview,
             niri_ipc::Action::OpenOverview {} => Self::OpenOverview,
             niri_ipc::Action::CloseOverview {} => Self::CloseOverview,
             niri_ipc::Action::ToggleWindowUrgent { id } => Self::ToggleWindowUrgent(id),
             niri_ipc::Action::SetWindowUrgent { id } => Self::SetWindowUrgent(id),
             niri_ipc::Action::UnsetWindowUrgent { id } => Self::UnsetWindowUrgent(id),
-            niri_ipc::Action::LoadConfigFile {} => Self::LoadConfigFile,
+            niri_ipc::Action::LoadConfigFile { path } => Self::LoadConfigFile(path),
         }
     }
 }
@@ -1068,7 +1071,7 @@ impl FromStr for Key {
             // [0]: https://github.com/xkbcommon/libxkbcommon/blob/45a118d5325b051343b4b174f60c1434196fa7d4/src/keysym.c#L276
             // [1]: https://docs.rs/xkbcommon/latest/xkbcommon/xkb/keysyms/index.html#:~:text=KEY%5FXF86ScreenSaver
             //
-            // See https://github.com/YaLTeR/niri/issues/1969
+            // See https://github.com/niri-wm/niri/issues/1969
             if keysym == Keysym::XF86_Screensaver {
                 keysym = keysym_from_name(key, KEYSYM_NO_FLAGS);
                 if keysym.raw() == KEY_NoSymbol {

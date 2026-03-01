@@ -6,7 +6,6 @@ use niri_config::utils::MergeWith as _;
 use niri_config::{Color, CornerRadius, GradientInterpolation};
 use niri_ipc::WindowLayout;
 use portable_atomic::AtomicU8;
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{Element, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
@@ -22,17 +21,18 @@ use crate::animation::{Animation, Clock};
 use crate::layout::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
 use crate::layout::SizingMode;
 use crate::niri_render_elements;
+use crate::render_helpers::background_effect::{self, BackgroundEffect, BackgroundEffectElement};
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::clipped_surface::{ClippedSurfaceRenderElement, RoundedCornerDamage};
 use crate::render_helpers::damage::ExtraDamage;
 use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenRenderElement};
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::resize::ResizeRenderElement;
-use crate::render_helpers::shaders::Shaders;
 use crate::render_helpers::shadow::ShadowRenderElement;
 use crate::render_helpers::snapshot::RenderSnapshot;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
-use crate::render_helpers::RenderTarget;
+use crate::render_helpers::xray::Xray;
+use crate::render_helpers::{RenderCtx, RenderTarget};
 use crate::utils::transaction::Transaction;
 use crate::utils::{
     baba_is_float_offset, round_logical_in_physical, round_logical_in_physical_max1,
@@ -344,6 +344,9 @@ pub struct Tile<W: LayoutElement> {
     /// The black backdrop for fullscreen windows.
     fullscreen_backdrop: SolidColorBuffer,
 
+    /// The background effect, like blur, behind the window.
+    background_effect: BackgroundEffect,
+
     /// Whether the tile should float upon unfullscreening.
     pub(super) restore_to_floating: bool,
 
@@ -415,17 +418,18 @@ pub struct Tile<W: LayoutElement> {
 niri_render_elements! {
     TileRenderElement<R> => {
         LayoutElement = LayoutElementRenderElement<R>,
-    FocusRing = FocusRingRenderElement,
-    SolidColor = SolidColorRenderElement,
-    Opening = OpeningWindowRenderElement,
-    Resize = ResizeRenderElement,
-    Border = BorderRenderElement,
-    Shadow = ShadowRenderElement,
-    ClippedSurface = ClippedSurfaceRenderElement<WaylandSurfaceRenderElement<R>>,
-    Offscreen = OffscreenRenderElement,
-    ExtraDamage = ExtraDamage,
-    TabIndicator = TabIndicatorRenderElement,
-}
+        FocusRing = FocusRingRenderElement,
+        SolidColor = SolidColorRenderElement,
+        Opening = OpeningWindowRenderElement,
+        Resize = ResizeRenderElement,
+        Border = BorderRenderElement,
+        Shadow = ShadowRenderElement,
+        ClippedSurface = ClippedSurfaceRenderElement<R>,
+        Offscreen = OffscreenRenderElement,
+        ExtraDamage = ExtraDamage,
+        BackgroundEffect = BackgroundEffectElement,
+        TabIndicator = TabIndicatorRenderElement,
+    }
 }
 
 pub type TileRenderSnapshot =
@@ -488,6 +492,7 @@ impl<W: LayoutElement> Tile<W> {
             shadow: Shadow::new(shadow_config),
             sizing_mode,
             fullscreen_backdrop: SolidColorBuffer::new((0., 0.), [0., 0., 0., 1.]),
+            background_effect: BackgroundEffect::new(),
             restore_to_floating: false,
             floating_window_size: None,
             floating_pos: None,
@@ -546,6 +551,8 @@ impl<W: LayoutElement> Tile<W> {
 
         let shadow_config = self.options.layout.shadow.merged_with(&rules.shadow);
         self.shadow.update_config(shadow_config);
+
+        self.background_effect.update_config(self.options.blur);
 
         self.tab_indicator
             .update_config(self.options.layout.tab_indicator);
@@ -705,7 +712,6 @@ impl<W: LayoutElement> Tile<W> {
             .unwrap_or_default()
             .fit_to(window_size.w as f32, window_size.h as f32);
         self.rounded_corner_damage.set_corner_radius(radius);
-        self.rounded_corner_damage.set_size(window_size);
     }
 
     pub fn advance_animations(&mut self) {
@@ -762,6 +768,21 @@ impl<W: LayoutElement> Tile<W> {
         let rules = self.window.focused_window().rules();
         let animated_tile_size = self.animated_tile_size();
         let expanded_progress = self.expanded_progress();
+
+        let radius = rules
+            .geometry_corner_radius
+            .unwrap_or_default()
+            .scaled_by(1. - expanded_progress as f32);
+        let has_blur_region = self
+            .window
+            .focused_window()
+            .blur_region()
+            .is_some_and(|r| !r.is_empty());
+        self.background_effect.update_render_elements(
+            radius,
+            rules.background_effect,
+            has_blur_region,
+        );
 
         let draw_border_with_background = rules
             .draw_border_with_background
@@ -1579,10 +1600,11 @@ impl<W: LayoutElement> Tile<W> {
     #[allow(clippy::too_many_arguments)]
     fn render_inner<R: NiriRenderer>(
         &self,
-        renderer: &mut R,
+        mut ctx: RenderCtx<R>,
         location: Point<f64, Logical>,
+        mut pos_in_backdrop: Point<f64, Logical>,
+        zoom: f64,
         focus_ring: bool,
-        target: RenderTarget,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render_inner");
@@ -1611,6 +1633,16 @@ impl<W: LayoutElement> Tile<W> {
             alpha * (1. - p) + 1. * p
         };
 
+        // This is here rather than in render_offset() because render_offset() is currently assumed
+        // by the code to be temporary. So, for example, interactive move will try to "grab" the
+        // tile at its current render offset and reset the render offset to zero by cancelling the
+        // tile move animations. On the other hand, bob_offset() is not resettable, so adding it in
+        // render_offset() would cause obvious animation glitches.
+        //
+        // This isn't to say that adding it here is perfect; indeed, it kind of breaks view_rect
+        // passed to update_render_elements(). But, it works well enough for what it is.
+        pos_in_backdrop += self.bob_offset().upscale(zoom);
+
         let tab_indicator_offset = self.tab_indicator_content_offset();
         let tab_indicator_loc = location + self.bob_offset();
         let location = location + self.bob_offset() + tab_indicator_offset;
@@ -1619,6 +1651,7 @@ impl<W: LayoutElement> Tile<W> {
         let window_size = self.window_size().to_f64();
         let animated_window_size = self.animated_window_size();
         let window_render_loc = location + window_loc;
+        pos_in_backdrop += window_loc.upscale(zoom);
         let area = Rectangle::new(window_render_loc, animated_window_size);
 
         self.window_size_override.increment();
@@ -1629,50 +1662,50 @@ impl<W: LayoutElement> Tile<W> {
             .geometry_corner_radius
             .unwrap_or_default()
             .scaled_by(1. - expanded_progress as f32);
-        let has_border_shader = BorderRenderElement::has_shader(renderer);
-        let geo = Rectangle::new(window_render_loc, window_size);
         let _animated_geo = Rectangle::new(window_render_loc, animated_window_size);
 
-        // Popups go on top.
+        // Popups go on top, whether it's resize or not.
         self.window.focused_window().render_popups(
-            renderer,
+            ctx.r(),
             window_render_loc,
             scale,
             win_alpha,
-            target,
-            &mut |elem| push(elem.into()),
+            &mut |elem| {
+                push(elem.into())
+            },
         );
 
         let mut pushed_resize = false;
         if let Some(resize) = &self.resize_animation {
-            if ResizeRenderElement::has_shader(renderer) {
-                let gles_renderer = renderer.as_gles_renderer();
+            if ResizeRenderElement::has_shader(ctx.renderer) {
+                let mut ctx = ctx.as_gles();
 
-                if let Some(texture_from) = resize.snapshot.texture(gles_renderer, scale, target) {
+                if let Some(texture_from) = resize.snapshot.texture(ctx.r(), scale) {
                     let mut window_elements = Vec::new();
                     self.window.focused_window().render_normal(
-                        gles_renderer,
+                        ctx.r(),
                         Point::from((0., 0.)),
                         scale,
                         1.,
-                        target,
                         &mut |elem| window_elements.push(elem),
                     );
 
                     let current = resize
                         .offscreen
-                        .render(gles_renderer, scale, &window_elements)
+                        .render(ctx.renderer, scale, &window_elements)
                         .map_err(|err| warn!("error rendering window to texture: {err:?}"))
                         .ok();
 
-                    let clip_to_geometry = if target
-                        .should_block_out(resize.snapshot.block_out_from)
-                        && target.should_block_out(rules.block_out_from)
-                    {
-                        true
-                    } else {
-                        clip_to_geometry
-                    };
+                    // Clip blocked-out resizes unconditionally because they use solid color render
+                    // elements.
+                    let clip_to_geometry =
+                        if ctx.target.should_block_out(resize.snapshot.block_out_from)
+                            && ctx.target.should_block_out(rules.block_out_from)
+                        {
+                            true
+                        } else {
+                            clip_to_geometry
+                        };
 
                     if let Some((elem_current, _sync_point, mut data)) = current {
                         let texture_current = elem_current.texture().clone();
@@ -1713,85 +1746,83 @@ impl<W: LayoutElement> Tile<W> {
             }
         }
 
-        let clip_shader = clip_to_geometry
-            .then(|| Shaders::get(renderer).clipped_surface.clone())
-            .flatten();
-        let radius = radius.fit_to(window_size.w as f32, window_size.h as f32);
-
-        if clip_to_geometry && clip_shader.is_some() {
-            let damage = self.rounded_corner_damage.element();
-            push(damage.with_location(window_render_loc).into());
-        }
-
+        // If we're not resizing, render the window itself.
+        let has_border_shader = BorderRenderElement::has_shader(ctx.renderer);
         if !pushed_resize {
-            let mut window_elements = Vec::new();
+            let geo = Rectangle::new(window_render_loc, window_size);
+            let radius = radius.fit_to(window_size.w as f32, window_size.h as f32);
+
+            let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
+            let clip = |elem| match elem {
+                LayoutElementRenderElement::Wayland(elem) => {
+                    // If we should clip to geometry, render a clipped window.
+                    if clip_to_geometry {
+                        if let Some(shader) = clip_shader.clone() {
+                            if ClippedSurfaceRenderElement::will_clip(&elem, scale, geo, radius) {
+                                return ClippedSurfaceRenderElement::new(
+                                    elem,
+                                    scale,
+                                    geo,
+                                    shader.clone(),
+                                    radius,
+                                )
+                                .into();
+                            }
+                        }
+                    }
+
+                    // Otherwise, render it normally.
+                    LayoutElementRenderElement::Wayland(elem).into()
+                }
+                LayoutElementRenderElement::SolidColor(elem) => {
+                    // In this branch we're rendering a blocked-out window with a solid
+                    // color. We need to render it with a rounded corner shader even if
+                    // clip_to_geometry is false, because in this case we're assuming that
+                    // the unclipped window CSD already has corners rounded to the
+                    // user-provided radius, so our blocked-out rendering should match that
+                    // radius.
+                    if radius != CornerRadius::default() && has_border_shader {
+                        return BorderRenderElement::new(
+                            geo.size,
+                            Rectangle::from_size(geo.size),
+                            GradientInterpolation::default(),
+                            Color::from_color32f(elem.color()),
+                            Color::from_color32f(elem.color()),
+                            0.,
+                            Rectangle::from_size(geo.size),
+                            0.,
+                            radius,
+                            scale.x as f32,
+                            1.,
+                        )
+                        .with_location(geo.loc)
+                        .into();
+                    }
+
+                    // Otherwise, render the solid color as is.
+                    LayoutElementRenderElement::SolidColor(elem).into()
+                }
+            };
+
+            if clip_to_geometry && clip_shader.is_some() {
+                let damage = self.rounded_corner_damage.render(geo);
+                push(damage.into());
+            }
+
             self.window.focused_window().render_normal(
-                renderer,
+                ctx.r(),
                 window_render_loc,
                 scale,
                 win_alpha,
-                target,
-                &mut |elem| window_elements.push(elem),
+                &mut |elem| {
+                    push(clip(elem))
+                },
             );
-
-            for elem in window_elements {
-                match elem {
-                    LayoutElementRenderElement::Wayland(elem) => {
-                        if clip_to_geometry {
-                            if let Some(shader) = clip_shader.clone() {
-                                if ClippedSurfaceRenderElement::will_clip(&elem, scale, geo, radius)
-                                {
-                                    let view_src = elem.view().src;
-                                    let buf_size = elem.buffer_size();
-                                    push(
-                                        ClippedSurfaceRenderElement::new(
-                                            elem,
-                                            view_src,
-                                            buf_size,
-                                            scale,
-                                            geo,
-                                            shader.clone(),
-                                            radius,
-                                            None,
-                                            0.,
-                                        )
-                                        .into(),
-                                    );
-                                    continue;
-                                }
-                            }
-                        }
-
-                        push(LayoutElementRenderElement::Wayland(elem).into());
-                    }
-                    LayoutElementRenderElement::SolidColor(elem) => {
-                        if radius != CornerRadius::default() && has_border_shader {
-                            let elem = BorderRenderElement::new(
-                                geo.size,
-                                Rectangle::from_size(geo.size),
-                                GradientInterpolation::default(),
-                                Color::from_color32f(elem.color()),
-                                Color::from_color32f(elem.color()),
-                                0.,
-                                Rectangle::from_size(geo.size),
-                                0.,
-                                radius,
-                                scale.x as f32,
-                                1.,
-                            )
-                            .with_location(geo.loc);
-                            push(elem.into());
-                        } else {
-                            push(LayoutElementRenderElement::SolidColor(elem).into());
-                        }
-                    }
-                }
-            }
         }
 
         if self.focused_window().sizing_mode() == SizingMode::Normal {
             self.tab_indicator
-                .render(renderer, tab_indicator_loc, &mut |elem| push(elem.into()));
+                .render(ctx.renderer, tab_indicator_loc, &mut |elem| push(elem.into()));
         }
 
         if fullscreen_progress > 0. {
@@ -1836,7 +1867,7 @@ impl<W: LayoutElement> Tile<W> {
 
         if let Some(width) = self.visual_border_width() {
             self.border.render(
-                renderer,
+                ctx.renderer,
                 location + Point::from((width, width)),
                 &mut |elem| push(elem.into()),
             );
@@ -1844,21 +1875,83 @@ impl<W: LayoutElement> Tile<W> {
 
         if focus_ring && expanded_progress < 1. {
             self.focus_ring
-                .render(renderer, location, &mut |elem| push(elem.into()));
+                .render(ctx.renderer, location, &mut |elem| push(elem.into()));
         }
 
         if expanded_progress < 1. {
             self.shadow
-                .render(renderer, location, &mut |elem| push(elem.into()));
+                .render(ctx.renderer, location, &mut |elem| push(elem.into()));
+        }
+
+        if self.background_effect.is_visible() {
+            // Effects not requested by the surface itself are drawn to match the geometry.
+            let mut clip = true;
+
+            // FIXME: support blur regions on subsurfaces in addition to the main surface.
+            let mut subregion = None;
+            let blur_geometry = if let Some(rects) = self.window.focused_window().blur_region() {
+                if rects.is_empty() {
+                    // Surface has a set, but empty blur region.
+                    None
+                } else {
+                    // If the surface itself requests the effects, apply different defaults.
+                    clip = rules.clip_to_geometry == Some(true);
+
+                    // Use geometry-shaped blur for blocked-out windows to avoid unintentionally
+                    // leaking any surface shapes. We render those windows as geometry-shaped solid
+                    // rectangles anyway.
+                    if ctx.target.should_block_out(rules.block_out_from) {
+                        clip = true;
+                        Some(area)
+                    } else {
+                        let anim_scale = animated_window_size / window_size;
+                        let mut main_surface_geo = self
+                            .window
+                            .focused_window()
+                            .main_surface_geo()
+                            .to_f64()
+                            .upscale(anim_scale);
+                        main_surface_geo.loc += area.loc;
+
+                        subregion = Some(background_effect::EffectSubregion {
+                            rects,
+                            scale: anim_scale,
+                            offset: main_surface_geo.loc,
+                        });
+
+                        main_surface_geo = main_surface_geo
+                            .to_physical_precise_round(self.scale)
+                            .to_logical(self.scale);
+                        Some(main_surface_geo)
+                    }
+                }
+            } else {
+                Some(area)
+            };
+
+            if let Some(geometry) = blur_geometry {
+                pos_in_backdrop += (geometry.loc - area.loc).upscale(zoom);
+                let params = background_effect::RenderParams {
+                    geometry,
+                    subregion,
+                    clip: clip.then_some((area, CornerRadius::default())),
+                    pos_in_backdrop,
+                    zoom,
+                    scale: self.scale,
+                };
+                self.background_effect
+                    .render(ctx.as_gles(), params, &mut |elem| push(elem.into()));
+            }
         }
     }
 
     pub fn render<R: NiriRenderer>(
         &self,
-        renderer: &mut R,
+        mut ctx: RenderCtx<R>,
         location: Point<f64, Logical>,
+        pos_in_backdrop: Point<f64, Logical>,
+        zoom: f64,
         focus_ring: bool,
-        target: RenderTarget,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render");
@@ -1874,17 +1967,18 @@ impl<W: LayoutElement> Tile<W> {
         self.window.focused_window().set_offscreen_data(None);
 
         if let Some(open) = &self.open_animation {
-            let renderer = renderer.as_gles_renderer();
+            let mut ctx = ctx.as_gles();
             let mut elements = Vec::new();
             self.render_inner(
-                renderer,
-                Point::from((0., 0.)),
+                ctx.r(),
+                Point::new(0., 0.),
+                pos_in_backdrop,
+                zoom,
                 focus_ring,
-                target,
                 &mut |elem| elements.push(elem),
             );
             match open.render(
-                renderer,
+                ctx.renderer,
                 &elements,
                 self.animated_bounding_box(),
                 location,
@@ -1901,16 +1995,17 @@ impl<W: LayoutElement> Tile<W> {
                 }
             }
         } else if let Some(alpha) = &self.alpha_animation {
-            let renderer = renderer.as_gles_renderer();
+            let mut ctx = ctx.as_gles();
             let mut elements = Vec::new();
             self.render_inner(
-                renderer,
-                Point::from((0., 0.)),
+                ctx.r(),
+                Point::new(0., 0.),
+                pos_in_backdrop,
+                zoom,
                 focus_ring,
-                target,
                 &mut |elem| elements.push(elem),
             );
-            match alpha.offscreen.render(renderer, scale, &elements) {
+            match alpha.offscreen.render(ctx.renderer, scale, &elements) {
                 Ok((elem, _sync, data)) => {
                     let offset = elem.offset();
                     let elem = elem.with_alpha(tile_alpha).with_offset(location + offset);
@@ -1927,50 +2022,153 @@ impl<W: LayoutElement> Tile<W> {
 
         if !pushed {
             self.render_inner(
-                renderer,
+                ctx,
                 location,
+                pos_in_backdrop,
+                zoom,
                 focus_ring,
-                target,
-                push,
+                &mut |elem| push(elem),
             );
         }
     }
-    pub fn store_unmap_snapshot_if_empty(&mut self, renderer: &mut GlesRenderer) {
+
+    pub fn store_unmap_snapshot_if_empty(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        xray: Option<&mut Xray>,
+        xray_has_blocked_out_layers: bool,
+        pos_in_backdrop: Point<f64, Logical>,
+        zoom: f64,
+    ) {
         if self.unmap_snapshot.is_some() {
             return;
         }
 
-        self.unmap_snapshot = Some(self.render_snapshot(renderer));
+        self.unmap_snapshot = Some(self.render_snapshot(
+            renderer,
+            xray,
+            xray_has_blocked_out_layers,
+            pos_in_backdrop,
+            zoom,
+        ));
     }
 
-    fn render_snapshot(&self, renderer: &mut GlesRenderer) -> TileRenderSnapshot {
+    fn render_snapshot(
+        &self,
+        renderer: &mut GlesRenderer,
+        mut xray: Option<&mut Xray>,
+        xray_has_blocked_out_layers: bool,
+        pos_in_backdrop: Point<f64, Logical>,
+        zoom: f64,
+    ) -> TileRenderSnapshot {
         let _span = tracy_client::span!("Tile::render_snapshot");
 
         let mut contents = Vec::new();
         self.render(
-            renderer,
+            RenderCtx {
+                target: RenderTarget::Output,
+                renderer,
+                xray: xray.as_deref(),
+            },
             Point::from((0., 0.)),
+            pos_in_backdrop,
+            zoom,
             false,
-            RenderTarget::Output,
             &mut |elem| contents.push(elem),
         );
+
+        let mut contents_with_blocked_out_bg = None;
+
+        // Do a bit of pointer surgery on Xray.
+        //
+        // The idea is to avoid the combinatorial combination of rendering snapshots for target
+        // (Output, Screencast) × Xray target (Output, Screencast, ScreenCapture).
+        //
+        // Our main goals:
+        // - Everything must look unblocked for RenderTarget::Output.
+        // - If anything is potentially blocked-out, it must not show up on any screen capture.
+        //
+        // Right above we rendered a fully-unblocked snapshot for the Output, so that's covered.
+        //
+        // Next, *only if Xray has any blocked-out surfaces* (which is a rare case), we will render
+        // a snapshot where the window itself is unblocked, but the Xray background is blocked. To
+        // do this, we swap the Output target buffers in Xray with the Screencast target buffers
+        // (which were prepared for us higher up the stack).
+        //
+        // Finally, we render a fully blocked-out snapshot. If Xray has blocked-out surfaces, then
+        // Xray's Screencast buffers are already filled-in, but if not, then we swap in the Output
+        // buffers, to avoid an extra render. This is safe since we know there are no blocked
+        // surfaces there.
+        let output_idx = RenderTarget::Output as usize;
+        let screencast_idx = RenderTarget::Screencast as usize;
+        let mut screencast_background = None;
+        let mut screencast_backdrop = None;
+        let mut output_background = None;
+        let mut output_backdrop = None;
+        if let Some(xray) = &mut xray {
+            screencast_background = Some(Rc::clone(&xray.background[screencast_idx]));
+            screencast_backdrop = Some(Rc::clone(&xray.backdrop[screencast_idx]));
+            output_background = Some(Rc::clone(&xray.background[output_idx]));
+            output_backdrop = Some(Rc::clone(&xray.backdrop[output_idx]));
+
+            if xray_has_blocked_out_layers {
+                xray.background[output_idx] = screencast_background.clone().unwrap();
+                xray.backdrop[output_idx] = screencast_backdrop.clone().unwrap();
+
+                let mut contents = Vec::new();
+                self.render(
+                    RenderCtx {
+                        target: RenderTarget::Output,
+                        renderer,
+                        xray: Some(xray),
+                    },
+                    Point::from((0., 0.)),
+                    pos_in_backdrop,
+                    zoom,
+                    false,
+                    &mut |elem| contents.push(elem),
+                );
+                contents_with_blocked_out_bg = Some(contents);
+            } else {
+                xray.background[screencast_idx] = output_background.clone().unwrap();
+                xray.backdrop[screencast_idx] = output_backdrop.clone().unwrap();
+            }
+        }
 
         // A bit of a hack to render blocked out as for screencast, but I think it's fine here.
         let mut blocked_out_contents = Vec::new();
         self.render(
-            renderer,
+            RenderCtx {
+                target: RenderTarget::Screencast,
+                renderer,
+                xray: xray.as_deref(),
+            },
             Point::from((0., 0.)),
+            pos_in_backdrop,
+            zoom,
             false,
-            RenderTarget::Screencast,
             &mut |elem| blocked_out_contents.push(elem),
         );
 
+        // Put everything back to normal.
+        if let Some(xray) = &mut xray {
+            if xray_has_blocked_out_layers {
+                xray.background[output_idx] = output_background.take().unwrap();
+                xray.backdrop[output_idx] = output_backdrop.take().unwrap();
+            } else {
+                xray.background[screencast_idx] = screencast_background.take().unwrap();
+                xray.backdrop[screencast_idx] = screencast_backdrop.take().unwrap();
+            }
+        }
+
         RenderSnapshot {
             contents,
+            contents_with_blocked_out_bg,
             blocked_out_contents,
             block_out_from: self.window.focused_window().rules().block_out_from,
             size: self.animated_bounding_box(),
             texture: Default::default(),
+            texture_with_blocked_out_bg: Default::default(),
             blocked_out_texture: Default::default(),
         }
     }
