@@ -9,7 +9,8 @@ repository.workspace = true
 
 [dependencies]
 bitflags.workspace = true
-csscolorparser = "0.8.2"
+# 0.8.2 is incompatible with our MSRV 1.85.0
+csscolorparser = "=0.8.1"
 knuffel = "3.2.0"
 miette = { version = "5.10.0", features = ["fancy-no-backtrace"] }
 niri-ipc = { version = "25.11.0", path = "../niri-ipc" }
