@@ -2258,6 +2258,7 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",
+ "wayland-server",
  "xcursor",
  "xshell",
  "zbus",
