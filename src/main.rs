@@ -55,6 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compact()
         .with_writer(io::stderr)
         .with_env_filter(env_filter)
+        .with_ansi_sanitization(false)
         .init();
 
     if env::var_os("NOTIFY_SOCKET").is_some() {
