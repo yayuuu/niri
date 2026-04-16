@@ -31,14 +31,14 @@ tracy-client = { version = "0.18.4", default-features = false }
 [workspace.dependencies.smithay]
 # version = "0.4.1"
 git = "https://github.com/Smithay/smithay.git"
-rev = "dce4d34e7421559b661af9c519904f4b24346148"
+rev = "dba255cd18c1a808c85a1d1144ad48e0b3f44b8f"
 # path = "../smithay"
 default-features = false
 
 [workspace.dependencies.smithay-drm-extras]
 # version = "0.1.0"
 git = "https://github.com/Smithay/smithay.git"
-rev = "dce4d34e7421559b661af9c519904f4b24346148"
+rev = "dba255cd18c1a808c85a1d1144ad48e0b3f44b8f"
 # path = "../smithay/smithay-drm-extras"
 
 [package]
@@ -77,7 +77,7 @@ fastrand = "2.3.0"
 futures-util = { version = "0.3.32", default-features = false, features = ["std", "io"] }
 git-version = "0.3.9"
 glam = "0.32.1"
-input = { version = "0.9.1", features = ["libinput_1_21"] }
+input = { version = "0.10.0", features = ["libinput_1_21"] }
 keyframe = { version = "1.1.1", default-features = false }
 libc = "0.2.182"
 libdisplay-info = "0.3.0"
@@ -97,9 +97,9 @@ smithay-drm-extras.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
 tracy-client.workspace = true
-wayland-backend = "0.3.14"
-wayland-scanner = "0.31.9"
-wayland-server = { version = "0.31.12", features = ["libwayland_1_23"] }
+wayland-backend = "0.3.15"
+wayland-scanner = "0.31.10"
+wayland-server = { version = "0.31.13", features = ["libwayland_1_23"] }
 xcursor = "0.3.10"
 zbus = { version = "5.13.2", optional = true }
 
