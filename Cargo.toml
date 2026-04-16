@@ -55,8 +55,11 @@ readme = "README.md"
 keywords = ["wayland", "compositor", "tiling", "smithay", "wm"]
 
 [dependencies]
-accesskit = { version = "0.24.0", optional = true }
-accesskit_unix = { version = "0.21.0", optional = true }
+# accesskit_unix 0.18 has a regression where it doesn't work in normal configurations.
+# accesskit 0.21 is its correct dependent version.
+# https://github.com/niri-wm/niri/issues/3594
+accesskit = { version = "0.21", optional = true }
+accesskit_unix = { version = "0.17", optional = true }
 anyhow.workspace = true
 arrayvec = "0.7.6"
 async-channel = "2.5.0"
