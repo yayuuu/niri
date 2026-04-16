@@ -41,6 +41,8 @@ use smithay::wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait};
 use touch_overview_grab::TouchOverviewGrab;
 
 use self::move_grab::MoveGrab;
+use self::pick_color_grab::PickColorGrab;
+use self::pick_window_grab::PickWindowGrab;
 use self::resize_grab::ResizeGrab;
 use self::spatial_movement_grab::SpatialMovementGrab;
 #[cfg(feature = "dbus")]
@@ -488,19 +490,22 @@ impl State {
                     }
                 }
 
-                if pressed
-                    && raw == Some(Keysym::Escape)
-                    && (this.niri.pick_window.is_some() || this.niri.pick_color.is_some())
-                {
-                    // We window picking state so the pick window grab must be active.
-                    // Unsetting it cancels window picking.
-                    this.niri
-                        .seat
-                        .get_pointer()
-                        .unwrap()
-                        .unset_grab(this, serial, time);
-                    this.niri.suppressed_keys.insert(key_code);
-                    return FilterResult::Intercept(None);
+                if pressed && raw == Some(Keysym::Escape) {
+                    // Cancel certain grabs on Escape.
+                    let pointer = this.niri.seat.get_pointer().unwrap();
+                    if pointer
+                        .with_grab(|_, grab| Self::grab_can_be_cancelled_with_esc(grab))
+                        .unwrap_or(false)
+                    {
+                        pointer.unset_grab(this, serial, time);
+
+                        // If this was a DnD, we won't get DndGrabHandler::dropped(), so we need to
+                        // call the cleanup.
+                        this.niri.on_maybe_dnd_ended();
+
+                        this.niri.suppressed_keys.insert(key_code);
+                        return FilterResult::Intercept(None);
+                    }
                 }
 
                 if let Some(Keysym::space) = raw {
@@ -4295,6 +4300,12 @@ impl State {
         grab.is::<DnDGrab<Self, WlDataSource, WlSurface>>()
             // Null-source DnD: weston-dnd --self-only
             || grab.is::<DnDGrab<Self, WlSurface, WlSurface>>()
+    }
+
+    fn grab_can_be_cancelled_with_esc(grab: &(dyn PointerGrab<State> + 'static)) -> bool {
+        let grab = grab.as_any();
+
+        grab.is::<PickWindowGrab>() || grab.is::<PickColorGrab>() || Self::is_dnd_grab(grab)
     }
 }
 
