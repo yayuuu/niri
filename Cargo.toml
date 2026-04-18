@@ -150,6 +150,7 @@ dinit = []
 
 [lints.clippy]
 new_without_default = "allow"
+collapsible_match = "allow"
 
 [profile.release]
 debug = "line-tables-only"
