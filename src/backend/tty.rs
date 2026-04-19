@@ -97,9 +97,6 @@ pub struct Tty {
     dmabuf_global: Option<DmabufGlobal>,
     // The output config had changed, but the session is paused, so we need to update it on resume.
     update_output_config_on_resume: bool,
-    // The ignored nodes have changed, but the session is paused, so we need to update it on
-    // resume.
-    update_ignored_nodes_on_resume: bool,
     // Whether the debug tinting is enabled.
     debug_tint: bool,
     ipc_outputs: Arc<Mutex<IpcOutputMap>>,
@@ -495,11 +492,6 @@ impl Tty {
         }
         info!("using as the render node: {node_path}");
 
-        let mut ignored_nodes = ignored_nodes_from_config(&config.borrow());
-        if ignored_nodes.remove(&primary_node) || ignored_nodes.remove(&primary_render_node) {
-            warn!("ignoring the primary node or render node is not allowed");
-        }
-
         Ok(Self {
             config,
             session,
@@ -508,11 +500,10 @@ impl Tty {
             gpu_manager,
             primary_node,
             primary_render_node,
-            ignored_nodes,
+            ignored_nodes: HashSet::new(),
             devices: HashMap::new(),
             dmabuf_global: None,
             update_output_config_on_resume: false,
-            update_ignored_nodes_on_resume: false,
             debug_tint: false,
             ipc_outputs: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -526,6 +517,9 @@ impl Tty {
         if !self.session.is_active() {
             return;
         }
+
+        // Initialize the ignored nodes.
+        self.ignored_nodes = self.compute_ignored_nodes();
 
         let udev = self.udev_dispatcher.clone();
         let udev = udev.as_source_ref();
@@ -565,6 +559,10 @@ impl Tty {
                     debug!("skipping UdevEvent::Added as session is inactive");
                     return;
                 }
+
+                // Recompute ignored nodes to resolve symlinks (like /dev/dri/by-path/...) to their
+                // new underlying device IDs.
+                self.ignored_nodes = self.compute_ignored_nodes();
 
                 if let Err(err) = self.device_added(device_id, &path, niri) {
                     warn!("error adding device: {err:?}");
@@ -613,16 +611,9 @@ impl Tty {
                     warn!("error resuming libinput");
                 }
 
-                if self.update_ignored_nodes_on_resume {
-                    self.update_ignored_nodes_on_resume = false;
-                    let mut ignored_nodes = ignored_nodes_from_config(&self.config.borrow());
-                    if ignored_nodes.remove(&self.primary_node)
-                        || ignored_nodes.remove(&self.primary_render_node)
-                    {
-                        warn!("ignoring the primary node or render node is not allowed");
-                    }
-                    self.ignored_nodes = ignored_nodes;
-                }
+                // While the session was suspended, GPUs could have been added, so
+                // /dev/dri/by-path/... symlinks need to be re-resolved.
+                self.ignored_nodes = self.compute_ignored_nodes();
 
                 let mut device_list = self
                     .udev_dispatcher
@@ -2292,22 +2283,25 @@ impl Tty {
         }
     }
 
-    pub fn update_ignored_nodes_config(&mut self, niri: &mut Niri) {
-        let _span = tracy_client::span!("Tty::update_ignored_nodes_config");
-
-        // If we're inactive, we can't do anything, so just set a flag for later.
-        if !self.session.is_active() {
-            self.update_ignored_nodes_on_resume = true;
-            return;
-        }
-
+    fn compute_ignored_nodes(&self) -> HashSet<DrmNode> {
         let mut ignored_nodes = ignored_nodes_from_config(&self.config.borrow());
         if ignored_nodes.remove(&self.primary_node)
             || ignored_nodes.remove(&self.primary_render_node)
         {
             warn!("ignoring the primary node or render node is not allowed");
         }
+        ignored_nodes
+    }
 
+    pub fn update_ignored_nodes_config(&mut self, niri: &mut Niri) {
+        let _span = tracy_client::span!("Tty::update_ignored_nodes_config");
+
+        // If we're inactive, we can't do anything, but we'll recompute in ActivateSession.
+        if !self.session.is_active() {
+            return;
+        }
+
+        let ignored_nodes = self.compute_ignored_nodes();
         if ignored_nodes == self.ignored_nodes {
             return;
         }
