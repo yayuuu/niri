@@ -149,7 +149,10 @@ impl Winit {
     pub fn init(&mut self, niri: &mut Niri) {
         let renderer = self.backend.renderer();
         if let Err(err) = renderer.bind_wl_display(&niri.display_handle) {
-            warn!("error binding renderer wl_display: {err}");
+            // wl_drm is on its way out so this is expected on most modern distros.
+            trace!("error binding legacy EGL to wl_display: {err}");
+        } else {
+            debug!("bound legacy EGL to wl_display");
         }
 
         resources::init(renderer);
