@@ -707,7 +707,14 @@ impl Tty {
                 }
 
                 // Add new devices.
-                for (device_id, path) in device_list.into_iter() {
+                //
+                // Add the primary node first as later nodes might depend on the primary render
+                // node being available.
+                let primary_device_id = self.primary_node.dev_id();
+                let primary_device_path = device_list.remove(&primary_device_id);
+                let primary = primary_device_path.map(|path| (primary_device_id, path));
+
+                for (device_id, path) in primary.into_iter().chain(device_list) {
                     if let Err(err) = self.device_added(device_id, &path, niri) {
                         warn!("error adding device: {err:?}");
                     }
