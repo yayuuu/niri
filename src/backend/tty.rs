@@ -519,6 +519,14 @@ impl Tty {
     }
 
     pub fn init(&mut self, niri: &mut Niri) {
+        // If the session is inactive, skip initialization because we won't be able to do much with
+        // the devices anyway. We'll get ActivateSession and add the devices there instead.
+        //
+        // This can happen when starting niri while having a different TTY active (e.g. via tmux).
+        if !self.session.is_active() {
+            return;
+        }
+
         let udev = self.udev_dispatcher.clone();
         let udev = udev.as_source_ref();
 
