@@ -27,15 +27,14 @@ tracy-client = { version = "0.18.4", default-features = false }
 
 [workspace.dependencies.smithay]
 # version = "0.4.1"
-git = "https://github.com/YaLTeR/smithay.git"
-# A hotfix for a GTK 4.23 text input compositor crash.
-rev = "a25476a140d89f7fe96ec49d0fdd68e37af7c17b"
+git = "https://github.com/Smithay/smithay.git"
+rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
 default-features = false
 
 [workspace.dependencies.smithay-drm-extras]
 # version = "0.1.0"
-git = "https://github.com/YaLTeR/smithay.git"
-rev = "a25476a140d89f7fe96ec49d0fdd68e37af7c17b"
+git = "https://github.com/Smithay/smithay.git"
+rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
 # path = "../smithay/smithay-drm-extras"
 
 [package]
