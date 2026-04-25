@@ -59,7 +59,9 @@ use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::utils::FloatOrInt;
 use crate::utils::{Flag, MergeWith as _};
-pub use crate::window_rule::{FloatingPosition, RelativeTo, WindowRule};
+pub use crate::window_rule::{
+    FloatingPosition, PopupsRule, RelativeTo, ResolvedPopupsRules, WindowRule,
+};
 pub use crate::workspace::{Workspace, WorkspaceLayoutPart};
 
 const RECURSION_LIMIT: u8 = 10;
@@ -338,11 +340,25 @@ where
                         ));
                     }
 
-                    let base = ctx.get::<BasePath>().unwrap();
-                    let path = base.0.join(path);
-
                     // We use DecodeError::Missing throughout this block because it results in the
                     // least confusing error messages while still allowing to provide a span.
+
+                    // Expand ~ into the home dir
+                    let path = if let Ok(rest) = path.strip_prefix("~") {
+                        let Some(home) = std::env::home_dir() else {
+                            ctx.emit_error(DecodeError::missing(
+                                node,
+                                format!("error retrieving home directory to expand {path:?}"),
+                            ));
+                            continue;
+                        };
+
+                        home.join(rest)
+                    } else {
+                        // Otherwise, use the current include base dir
+                        let base = ctx.get::<BasePath>().unwrap();
+                        base.0.join(path)
+                    };
 
                     let recursion = ctx.get::<Recursion>().unwrap().0 + 1;
                     if recursion == RECURSION_LIMIT {
@@ -703,6 +719,7 @@ mod tests {
 
                 tablet {
                     map-to-output "eDP-1"
+                    map-to-focused-output
                     calibration-matrix 1.0 2.0 3.0 \
                                        4.0 5.0 6.0
                 }
@@ -1094,6 +1111,7 @@ mod tests {
                     map_to_output: Some(
                         "eDP-1",
                     ),
+                    map_to_focused_output: true,
                     left_handed: false,
                 },
                 touch: Touch {
@@ -1856,6 +1874,16 @@ mod tests {
                         noise: None,
                         saturation: None,
                     },
+                    popups: PopupsRule {
+                        opacity: None,
+                        geometry_corner_radius: None,
+                        background_effect: BackgroundEffectRule {
+                            xray: None,
+                            blur: None,
+                            noise: None,
+                            saturation: None,
+                        },
+                    },
                 },
             ],
             layer_rules: [
@@ -1896,6 +1924,16 @@ mod tests {
                         blur: None,
                         noise: None,
                         saturation: None,
+                    },
+                    popups: PopupsRule {
+                        opacity: None,
+                        geometry_corner_radius: None,
+                        background_effect: BackgroundEffectRule {
+                            xray: None,
+                            blur: None,
+                            noise: None,
+                            saturation: None,
+                        },
                     },
                 },
             ],

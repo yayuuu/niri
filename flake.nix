@@ -16,39 +16,41 @@
     };
   };
 
-  outputs = {
-    self,
-    nixpkgs,
-    treefmt-nix,
-    fenix,
-    crane,
-    advisory-db,
-  }: let
-    niri-package = {
-      lib,
-      cairo,
-      dbus,
-      libGL,
-      libdisplay-info,
-      libinput,
-      seatd,
-      libxkbcommon,
-      libgbm,
-      pango,
-      pipewire,
-      pkg-config,
-      rustPlatform,
-      systemd,
-      wayland,
-      installShellFiles,
-      withDbus ? true,
-      withSystemd ? true,
-      withScreencastSupport ? true,
-      withDinit ? false,
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
     }:
-      rustPlatform.buildRustPackage {
-        pname = "niri";
-        version = self.shortRev or self.dirtyShortRev or "unknown";
+    let
+      revision = self.shortRev or self.dirtyShortRev or "unknown";
+      niri-package =
+        {
+          lib,
+          cairo,
+          dbus,
+          libGL,
+          libdisplay-info,
+          libinput,
+          seatd,
+          libxkbcommon,
+          libgbm,
+          pango,
+          pipewire,
+          pkg-config,
+          rustPlatform,
+          systemd,
+          wayland,
+          installShellFiles,
+          withDbus ? true,
+          withSystemd ? true,
+          withScreencastSupport ? true,
+          withDinit ? false,
+        }:
+
+        rustPlatform.buildRustPackage {
+          pname = "niri";
+          version = revision;
 
         src = lib.fileset.toSource {
           root = ./.;
@@ -150,7 +152,7 @@
                 "-Wl,--pop-state"
               ]
             );
-            NIRI_BUILD_COMMIT = self.shortRev;
+            NIRI_BUILD_COMMIT = revision;
           };
 
         passthru = {

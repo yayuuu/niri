@@ -370,11 +370,10 @@ impl Thumbnail {
 
         // Clip thumbnails to their geometry.
         let radius = if mapped.sizing_mode().is_normal() {
-            mapped.rules().geometry_corner_radius
+            mapped.geometry_corner_radius()
         } else {
-            None
-        }
-        .unwrap_or_default();
+            CornerRadius::default()
+        };
 
         let has_border_shader = BorderRenderElement::has_shader(ctx.renderer);
         let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
@@ -420,6 +419,12 @@ impl Thumbnail {
 
                 // Otherwise, render the solid color as is.
                 LayoutElementRenderElement::SolidColor(elem).into()
+            }
+            elem @ LayoutElementRenderElement::BackgroundEffect(_) => {
+                // This is only used on popups for now. If subsurface blur is implemented, this
+                // will need to be handled somehow.
+                error!("background effect clipping is unimplemented");
+                elem.into()
             }
         };
 

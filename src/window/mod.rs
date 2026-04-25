@@ -4,7 +4,7 @@ use niri_config::utils::MergeWith as _;
 use niri_config::window_rule::{Match, WindowRule};
 use niri_config::{
     BackgroundEffect, BlockOutFrom, BorderRule, CornerRadius, FloatingPosition, PresetSize,
-    ShadowRule, TabIndicatorRule,
+    ResolvedPopupsRules, ShadowRule, TabIndicatorRule,
 };
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{Logical, Size};
@@ -118,6 +118,9 @@ pub struct ResolvedWindowRules {
 
     /// Background effect configuration.
     pub background_effect: BackgroundEffect,
+
+    /// Rules for this window's popups.
+    pub popups: ResolvedPopupsRules,
 }
 
 impl<'a> WindowRef<'a> {
@@ -295,6 +298,8 @@ impl ResolvedWindowRules {
                 resolved
                     .background_effect
                     .merge_with(&rule.background_effect);
+
+                resolved.popups.merge_with(&rule.popups);
             }
 
             resolved.open_on_output = open_on_output.map(|x| x.to_owned());

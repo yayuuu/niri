@@ -20,6 +20,7 @@ use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::SizingMode;
 use crate::niri_render_elements;
 use crate::render_helpers::renderer::NiriRenderer;
+use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 use crate::utils::ResizeEdge;
@@ -3488,8 +3489,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     pub fn render<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
-        pos_in_backdrop: Point<f64, Logical>,
-        zoom: f64,
+        xray_pos: XrayPos,
         focus_ring: bool,
         push: &mut dyn FnMut(ScrollingSpaceRenderElement<R>),
     ) {
@@ -3514,7 +3514,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let col_off = Point::from((col_x, 0.));
             let col_render_off = col.render_offset();
 
-            for (tile, tile_off) in col.tiles_in_render_order() {
+            // Draw the tab indicator on top.
+            {
+                let pos = view_off + col_off + col_render_off;
+                let pos = pos.to_physical_precise_round(scale).to_logical(scale);
+                col.tab_indicator
+                    .render(ctx.renderer, pos, &mut |elem| push(elem.into()));
+            }
+
+            for (tile, tile_off, visible) in col.tiles_in_render_order() {
                 let tile_pos =
                     view_off + col_off + col_render_off + tile_off + tile.render_offset();
                 // Round to physical pixels.
@@ -3531,15 +3539,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // mode, so we don't want to apply "visible" immediately. However, "visible" is
                 // also used for input handling, and there we *do* want to apply it immediately.
                 // So, let's just selectively ignore "visible" here when animating alpha.
-                let pos_in_backdrop = pos_in_backdrop + tile_pos.upscale(zoom);
-                tile.render(
-                    ctx.r(),
-                    tile_pos,
-                    pos_in_backdrop,
-                    zoom,
-                    focus_ring,
-                    &mut |elem| push(elem.into()),
-                );
+                let visible = visible || tile.alpha_animation.is_some();
+                if !visible {
+                    continue;
+                }
+
+                let xray_pos = xray_pos.offset(tile_pos);
+                tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
+                    push(elem.into())
+                });
             }
         }
     }

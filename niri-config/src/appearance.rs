@@ -1027,7 +1027,6 @@ impl Default for Blur {
     fn default() -> Self {
         Self {
             off: false,
-            // TODO: tune, reduce passes
             passes: 3,
             offset: 3.,
             noise: 0.02,
@@ -1074,12 +1073,6 @@ pub struct BackgroundEffectRule {
     pub noise: Option<FloatOrInt<0, 1000>>,
     #[knuffel(child, unwrap(argument))]
     pub saturation: Option<FloatOrInt<0, 1000>>,
-}
-
-impl MergeWith<Self> for BackgroundEffectRule {
-    fn merge_with(&mut self, part: &Self) {
-        merge_clone_opt!((self, part), xray, blur, noise, saturation);
-    }
 }
 
 /// Resolved background effect rule.

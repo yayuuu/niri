@@ -1,8 +1,95 @@
 use std::cmp::{max, min};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
-use smithay::utils::{Logical, Rectangle};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 use smithay::wayland::compositor::{RectangleKind, RegionAttributes};
+
+/// Helper for fractionally transforming an i32 region while preserving adjacent rects.
+///
+/// Naively applying floating point transforms may cause adjacent rects to go misaligned due to
+/// rounding differences. This struct helps apply the transforms in such a way as to preserve
+/// alignment.
+#[derive(Debug, Clone)]
+pub struct TransformedRegion {
+    /// Non-overlapping rects (usually in surface-local coordinates).
+    pub rects: Arc<Vec<Rectangle<i32, Logical>>>,
+    /// Scale to apply to each rect.
+    pub scale: Scale<f64>,
+    /// Translation to apply to each rect after scaling.
+    pub offset: Point<f64, Logical>,
+}
+
+impl TransformedRegion {
+    /// Returns an iterator over the top-left and bottom-right corners of transformed rects.
+    pub fn iter(&self) -> impl Iterator<Item = (Point<f64, Logical>, Point<f64, Logical>)> + '_ {
+        self.rects.iter().map(|r| {
+            // Here we start in a happy i32 world where everything lines up, and rectangle loc +
+            // size is exactly equal to the adjacent rectangle's loc.
+            //
+            // Unfortunately, we're about to descend to the floating point hell. And we *really*
+            // want adjacent rects to remain adjacent no matter what. So we'll convert our rects to
+            // their extremities (rather than loc and size), and operate on those. Coordinates from
+            // adjacent rects will undergo exactly the same floating point operations, so when
+            // they're ultimately rounded to physical pixels, they will remain adjacent.
+            let r = r.to_f64();
+
+            let mut a = r.loc;
+            // f64 is enough to represent this i32 addition exactly.
+            let mut b = r.loc + r.size.to_point();
+
+            a = a.upscale(self.scale);
+            b = b.upscale(self.scale);
+
+            a += self.offset;
+            b += self.offset;
+
+            (a, b)
+        })
+    }
+
+    /// Intersects damage with this subregion.
+    pub fn filter_damage(
+        &self,
+        // Same coordinate space as self.iter().
+        crop: Rectangle<f64, Logical>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        filtered: &mut Vec<Rectangle<i32, Physical>>,
+    ) {
+        let scale = dst.size.to_f64() / crop.size;
+
+        let cs = crop.size.to_point();
+
+        for (mut a, mut b) in self.iter() {
+            // Convert to dst-relative.
+            a -= crop.loc;
+            b -= crop.loc;
+
+            // Intersect with crop.
+            let ia = Point::new(f64::max(a.x, 0.), f64::max(a.y, 0.));
+            let ib = Point::new(f64::min(b.x, cs.x), f64::min(b.y, cs.y));
+            if ib.x <= ia.x || ib.y <= ia.y {
+                // No intersection.
+                continue;
+            }
+
+            // Round extremities to physical pixels, ensuring that adjacent rectangles stay adjacent
+            // at fractional scales.
+            let ia = ia.to_physical_precise_round(scale);
+            let ib = ib.to_physical_precise_round(scale);
+
+            let r = Rectangle::from_extremities(ia, ib);
+
+            // Intersect with each damage rect.
+            for d in damage {
+                if let Some(intersection) = r.intersection(*d) {
+                    filtered.push(intersection);
+                }
+            }
+        }
+    }
+}
 
 pub fn region_to_non_overlapping_rects(
     region: &RegionAttributes,

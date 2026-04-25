@@ -15,6 +15,7 @@ use smithay::backend::renderer::utils::{
 use smithay::backend::renderer::{
     Bind as _, Color32F, ContextId, Frame as _, Offscreen as _, Renderer, Texture as _,
 };
+use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
 
 use super::encompassing_geo;
@@ -82,7 +83,12 @@ impl OffscreenBuffer {
             RelocateRenderElement::from_element(ele, geo.loc.upscale(-1), Relocate::Relative)
         }));
 
-        let src_size = geo.size;
+        // Guard against empty elements producing a zero size.
+        let mut src_size = geo.size;
+        if src_size.w == 0 || src_size.h == 0 {
+            src_size = Size::new(1, 1);
+        }
+
         let src_size = src_size.to_logical(1).to_buffer(1, Transform::Normal);
         let offset = geo.loc.to_f64().to_logical(scale);
 
@@ -302,6 +308,7 @@ impl RenderElement<GlesRenderer> for OffscreenRenderElement {
         dest: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
+        _cache: Option<&UserDataMap>,
     ) -> Result<(), GlesError> {
         if frame.context_id() != self.renderer_context_id {
             warn!("trying to render texture from different renderer");
@@ -336,9 +343,18 @@ impl<'render> RenderElement<TtyRenderer<'render>> for OffscreenRenderElement {
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
     ) -> Result<(), TtyRendererError<'render>> {
         let gles_frame = frame.as_gles_frame();
-        RenderElement::<GlesRenderer>::draw(&self, gles_frame, src, dst, damage, opaque_regions)?;
+        RenderElement::<GlesRenderer>::draw(
+            &self,
+            gles_frame,
+            src,
+            dst,
+            damage,
+            opaque_regions,
+            cache,
+        )?;
         Ok(())
     }
 
