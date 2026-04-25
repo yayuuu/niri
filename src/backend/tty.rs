@@ -58,6 +58,7 @@ use smithay::wayland::drm_lease::{
 };
 use smithay::wayland::presentation::Refresh;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
+use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 
 use super::{IpcOutputMap, RenderResult};
@@ -2948,7 +2949,7 @@ fn surface_dmabuf_feedback(
     primary_formats: FormatSet,
     primary_render_node: DrmNode,
     surface_render_node: Option<DrmNode>,
-    _surface_scanout_node: DrmNode,
+    surface_scanout_node: DrmNode,
 ) -> Result<SurfaceDmabufFeedback, io::Error> {
     let surface = compositor.surface();
     let planes = surface.planes();
@@ -2989,7 +2990,22 @@ fn surface_dmabuf_feedback(
         primary_or_overlay_scanout_formats.len() - primary_scanout_formats.len(),
     );
 
-    let scanout = builder.clone().build()?;
+    // Prefer the primary-plane-only formats, then primary-or-overlay-plane formats. This will
+    // increase the chance of scanning out a client even with our disabled-by-default overlay
+    // planes.
+    let scanout = builder
+        .clone()
+        .add_preference_tranche(
+            surface_scanout_node.dev_id(),
+            Some(TrancheFlags::Scanout),
+            primary_scanout_formats,
+        )
+        .add_preference_tranche(
+            surface_scanout_node.dev_id(),
+            Some(TrancheFlags::Scanout),
+            primary_or_overlay_scanout_formats,
+        )
+        .build()?;
 
     // If this is the primary node surface, send scanout formats in both tranches to avoid
     // duplication.
