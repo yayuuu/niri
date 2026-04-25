@@ -1,11 +1,10 @@
 use core::f64;
 use std::rc::Rc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use niri_config::utils::MergeWith as _;
 use niri_config::{Color, CornerRadius, GradientInterpolation};
 use niri_ipc::WindowLayout;
-use portable_atomic::AtomicU8;
 use smithay::backend::renderer::element::{Element, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
@@ -21,7 +20,7 @@ use crate::animation::{Animation, Clock};
 use crate::layout::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
 use crate::layout::SizingMode;
 use crate::niri_render_elements;
-use crate::render_helpers::background_effect::BackgroundEffectElement;
+use crate::render_helpers::background_effect::{BackgroundEffect, BackgroundEffectElement};
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::clipped_surface::{ClippedSurfaceRenderElement, RoundedCornerDamage};
 use crate::render_helpers::damage::ExtraDamage;
@@ -67,7 +66,7 @@ impl WindowSizeOverride {
 
     fn increment(&self) {
         if self.rendered_frames.load(Ordering::SeqCst) < 3 {
-            self.rendered_frames.add(1, Ordering::SeqCst);
+            self.rendered_frames.fetch_add(1, Ordering::SeqCst);
         }
     }
 }
@@ -552,7 +551,9 @@ impl<W: LayoutElement> Tile<W> {
         let shadow_config = self.options.layout.shadow.merged_with(&rules.shadow);
         self.shadow.update_config(shadow_config);
 
-        self.window.update_config(self.options.blur);
+        for window in self.window.iter_mut() {
+            window.update_config(self.options.blur);
+        }
 
         self.tab_indicator
             .update_config(self.options.layout.tab_indicator);
@@ -709,6 +710,7 @@ impl<W: LayoutElement> Tile<W> {
         let window_size = self.window_size();
         let radius = self
             .window
+            .focused_window()
             .geometry_corner_radius()
             .fit_to(window_size.w as f32, window_size.h as f32);
         self.rounded_corner_damage.set_corner_radius(radius);
@@ -810,6 +812,7 @@ impl<W: LayoutElement> Tile<W> {
         // when that changes between animated commits.
         let radius = self
             .window
+            .focused_window()
             .geometry_corner_radius()
             .expanded_by(border_width as f32)
             .scaled_by(1. - expanded_progress as f32);
@@ -831,6 +834,7 @@ impl<W: LayoutElement> Tile<W> {
             radius
         } else {
             self.window
+                .focused_window()
                 .geometry_corner_radius()
                 .scaled_by(1. - expanded_progress as f32)
         };
@@ -1206,6 +1210,10 @@ impl<W: LayoutElement> Tile<W> {
 
     pub fn windows(&self) -> impl Iterator<Item = &W> {
         self.window.iter()
+    }
+
+    pub fn window(&self) -> &W {
+        self.focused_window()
     }
 
     pub fn windows_mut(&mut self) -> impl Iterator<Item = &mut W> {
@@ -1650,7 +1658,7 @@ impl<W: LayoutElement> Tile<W> {
         //
         // This isn't to say that adding it here is perfect; indeed, it kind of breaks view_rect
         // passed to update_render_elements(). But, it works well enough for what it is.
-        pos_in_backdrop += self.bob_offset().upscale(zoom);
+        xray_pos = xray_pos.offset(self.bob_offset());
 
         let tab_indicator_offset = self.tab_indicator_content_offset();
         let tab_indicator_loc = location + self.bob_offset();
@@ -1660,7 +1668,6 @@ impl<W: LayoutElement> Tile<W> {
         let window_size = self.window_size().to_f64();
         let animated_window_size = self.animated_window_size();
         let window_render_loc = location + window_loc;
-        pos_in_backdrop += window_loc.upscale(zoom);
         let area = Rectangle::new(window_render_loc, animated_window_size);
         xray_pos = xray_pos.offset(window_loc);
 
@@ -1670,12 +1677,13 @@ impl<W: LayoutElement> Tile<W> {
         let clip_to_geometry = fullscreen_progress < 1. && rules.clip_to_geometry == Some(true);
         let radius = self
             .window
+            .focused_window()
             .geometry_corner_radius()
             .scaled_by(1. - expanded_progress as f32);
         let _animated_geo = Rectangle::new(window_render_loc, animated_window_size);
 
         // Popups go on top, whether it's resize or not.
-        self.window.render_popups(
+        self.window.focused_window().render_popups(
             ctx.r(),
             window_render_loc,
             scale,
@@ -1691,7 +1699,7 @@ impl<W: LayoutElement> Tile<W> {
 
                 if let Some(texture_from) = resize.snapshot.texture(ctx.r(), scale) {
                     let mut window_elements = Vec::new();
-                    self.window.render_normal(
+                    self.window.focused_window().render_normal(
                         ctx.r(),
                         Point::from((0., 0.)),
                         scale,
@@ -1824,10 +1832,15 @@ impl<W: LayoutElement> Tile<W> {
                 push(damage.into());
             }
 
-            self.window
-                .render_normal(ctx.r(), window_render_loc, scale, win_alpha, &mut |elem| {
+            self.window.focused_window().render_normal(
+                ctx.r(),
+                window_render_loc,
+                scale,
+                win_alpha,
+                &mut |elem| {
                     push(clip(elem))
-                });
+                },
+            );
         }
 
         if self.focused_window().sizing_mode() == SizingMode::Normal {
@@ -1842,6 +1855,7 @@ impl<W: LayoutElement> Tile<W> {
                 let border_width = self.visual_border_width().unwrap_or(0.);
                 let radius = self
                     .window
+                    .focused_window()
                     .geometry_corner_radius()
                     .expanded_by(border_width as f32)
                     .scaled_by(1. - expanded_progress as f32);
@@ -1893,7 +1907,7 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         let surface_anim_scale = animated_window_size / window_size;
-        self.window.render_background_effect(
+        self.window.focused_window().render_background_effect(
             ctx.as_gles(),
             area,
             self.scale,

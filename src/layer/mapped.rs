@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
 use niri_config::utils::MergeWith as _;
-use niri_config::{Config, CornerRadius, LayerRule};
+use niri_config::{Config, LayerRule};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::Kind;
 use smithay::desktop::{LayerSurface, PopupKind, PopupManager};
@@ -11,7 +9,6 @@ use smithay::wayland::shell::wlr_layer::{ExclusiveZone, Layer};
 
 use super::ResolvedLayerRules;
 use crate::animation::Clock;
-use crate::handlers::background_effect::get_cached_blur_region;
 use crate::layout::shadow::Shadow;
 use crate::niri_render_elements;
 use crate::render_helpers::background_effect::BackgroundEffectElement;
@@ -128,12 +125,6 @@ impl MappedLayer {
         self.shadow
             .update_render_elements(size, true, radius, self.scale, 1.);
 
-        let has_blur_region = self.blur_region().is_some_and(|r| !r.is_empty());
-        self.background_effect.update_render_elements(
-            radius,
-            self.rules.background_effect,
-            has_blur_region,
-        );
     }
 
     pub fn are_animations_ongoing(&self) -> bool {

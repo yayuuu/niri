@@ -510,7 +510,7 @@ impl State {
                     {
                         pointer.unset_grab(this, serial, time);
                         this.niri.suppressed_keys.insert(key_code);
-                        return FilterResult::Intercept(None);
+                        return ShouldInterceptResult::InterceptOnly;
                     }
                 }
 

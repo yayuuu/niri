@@ -1757,16 +1757,16 @@ impl<W: LayoutElement> Monitor<W> {
 
             let xray_pos = XrayPos::new(geo.loc, zoom);
 
-            ws.render_floating(ctx.r(), xray_pos, focus_ring, push!());
+            ws.render_floating(ctx.r(), xray_pos, focus_ring, push_elem!());
 
             if let Some(loc) = insert_hint_render_loc {
                 if loc.workspace == InsertWorkspace::Existing(ws.id()) {
                     self.insert_hint_element
-                        .render(ctx.renderer, loc.location, push!());
+                        .render(ctx.renderer, loc.location, push_elem!());
                 }
             }
 
-            ws.render_scrolling(ctx.r(), xray_pos, focus_ring, push!());
+            ws.render_scrolling(ctx.r(), xray_pos, focus_ring, push_elem!());
         }
     }
 

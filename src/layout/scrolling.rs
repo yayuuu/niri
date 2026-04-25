@@ -3514,15 +3514,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let col_off = Point::from((col_x, 0.));
             let col_render_off = col.render_offset();
 
-            // Draw the tab indicator on top.
-            {
-                let pos = view_off + col_off + col_render_off;
-                let pos = pos.to_physical_precise_round(scale).to_logical(scale);
-                col.tab_indicator
-                    .render(ctx.renderer, pos, &mut |elem| push(elem.into()));
-            }
-
-            for (tile, tile_off, visible) in col.tiles_in_render_order() {
+            for (tile, tile_off) in col.tiles_in_render_order() {
                 let tile_pos =
                     view_off + col_off + col_render_off + tile_off + tile.render_offset();
                 // Round to physical pixels.
@@ -3533,16 +3525,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // For the active tile (which comes first), draw the focus ring.
                 let focus_ring = focus_ring && first;
                 first = false;
-
-                // In the scrolling layout, we currently use visible only for hidden tabs in the
-                // tabbed mode. We want to animate their opacity when going in and out of tabbed
-                // mode, so we don't want to apply "visible" immediately. However, "visible" is
-                // also used for input handling, and there we *do* want to apply it immediately.
-                // So, let's just selectively ignore "visible" here when animating alpha.
-                let visible = visible || tile.alpha_animation.is_some();
-                if !visible {
-                    continue;
-                }
 
                 let xray_pos = xray_pos.offset(tile_pos);
                 tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
