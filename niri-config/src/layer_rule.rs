@@ -1,6 +1,6 @@
-use crate::appearance::{BlockOutFrom, CornerRadius, ShadowRule};
+use crate::appearance::{BackgroundEffectRule, BlockOutFrom, CornerRadius, ShadowRule};
 use crate::utils::RegexEq;
-use crate::BlurRule;
+use crate::window_rule::PopupsRule;
 
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
 pub struct LayerRule {
@@ -15,14 +15,16 @@ pub struct LayerRule {
     pub block_out_from: Option<BlockOutFrom>,
     #[knuffel(child, default)]
     pub shadow: ShadowRule,
-    #[knuffel(child, default)]
-    pub blur: BlurRule,
     #[knuffel(child)]
     pub geometry_corner_radius: Option<CornerRadius>,
     #[knuffel(child, unwrap(argument))]
     pub place_within_backdrop: Option<bool>,
     #[knuffel(child, unwrap(argument))]
     pub baba_is_float: Option<bool>,
+    #[knuffel(child, default)]
+    pub background_effect: BackgroundEffectRule,
+    #[knuffel(child, default)]
+    pub popups: PopupsRule,
 }
 
 #[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
@@ -31,4 +33,6 @@ pub struct Match {
     pub namespace: Option<RegexEq>,
     #[knuffel(property)]
     pub at_startup: Option<bool>,
+    #[knuffel(property, str)]
+    pub layer: Option<niri_ipc::Layer>,
 }

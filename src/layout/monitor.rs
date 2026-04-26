@@ -24,7 +24,8 @@ use crate::niri_render_elements;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::shadow::ShadowRenderElement;
 use crate::render_helpers::solid_color::SolidColorRenderElement;
-use crate::render_helpers::RenderTarget;
+use crate::render_helpers::xray::XrayPos;
+use crate::render_helpers::RenderCtx;
 use crate::rubber_band::RubberBand;
 use crate::utils::transaction::Transaction;
 use crate::utils::{
@@ -1519,6 +1520,13 @@ impl<W: LayoutElement> Monitor<W> {
         (0..=self.workspaces.len()).map(move |idx| {
             let y = first_ws_y + idx as f64 * ws_height_with_gap;
             let loc = Point::from((0., y)) + static_offset;
+
+            // Even though all components that go into loc are rounded to physical pixels, the
+            // floating point addition may lose precision. This can result for example in the
+            // current workspace having y = 0.0000000000002 and thus missing pointer hits at the
+            // monitor edge with y = 0. So, post-round the location too.
+            let loc = loc.to_physical_precise_round(scale).to_logical(scale);
+
             Rectangle::new(loc, ws_size)
         })
     }
@@ -1691,8 +1699,7 @@ impl<W: LayoutElement> Monitor<W> {
 
     pub fn render_workspaces<R: NiriRenderer>(
         &self,
-        renderer: &mut R,
-        target: RenderTarget,
+        mut ctx: RenderCtx<R>,
         focus_ring: bool,
         push: &mut dyn FnMut(MonitorRenderElement<R>),
     ) {
@@ -1726,11 +1733,8 @@ impl<W: LayoutElement> Monitor<W> {
 
         let zoom = self.overview_zoom();
         let insert_hint_render_loc = self.insert_hint_render_loc;
-        let overview_open = self.overview_progress.is_some();
 
         for ((_idx, ws), geo) in self.workspaces_with_render_geo_idx() {
-            let force_optimized_blur = self.are_animations_ongoing() || overview_open;
-            let overview_zoom_offset = Some(geo.loc);
             // Macro instead of closure because ws and insert hint have different elem types.
             macro_rules! push_elem {
                 () => {{
@@ -1751,32 +1755,18 @@ impl<W: LayoutElement> Monitor<W> {
                 }};
             }
 
-            ws.render_floating(
-                renderer,
-                target,
-                focus_ring,
-                push_elem!(),
-                zoom,
-                force_optimized_blur,
-                overview_zoom_offset,
-            );
+            let xray_pos = XrayPos::new(geo.loc, zoom);
+
+            ws.render_floating(ctx.r(), xray_pos, focus_ring, push_elem!());
 
             if let Some(loc) = insert_hint_render_loc {
                 if loc.workspace == InsertWorkspace::Existing(ws.id()) {
                     self.insert_hint_element
-                        .render(renderer, loc.location, push_elem!());
+                        .render(ctx.renderer, loc.location, push_elem!());
                 }
             }
 
-            ws.render_scrolling(
-                renderer,
-                target,
-                focus_ring,
-                push_elem!(),
-                zoom,
-                force_optimized_blur,
-                overview_zoom_offset,
-            );
+            ws.render_scrolling(ctx.r(), xray_pos, focus_ring, push_elem!());
         }
     }
 

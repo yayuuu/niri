@@ -3,8 +3,8 @@ use std::cmp::{max, min};
 use niri_config::utils::MergeWith as _;
 use niri_config::window_rule::{Match, WindowRule};
 use niri_config::{
-    BlockOutFrom, BlurRule, BorderRule, CornerRadius, FloatingPosition, PresetSize, ShadowRule,
-    TabIndicatorRule,
+    BackgroundEffect, BlockOutFrom, BorderRule, CornerRadius, FloatingPosition, PresetSize,
+    ResolvedPopupsRules, ShadowRule, TabIndicatorRule,
 };
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{Logical, Size};
@@ -84,8 +84,6 @@ pub struct ResolvedWindowRules {
     pub border: BorderRule,
     /// Shadow overrides.
     pub shadow: ShadowRule,
-    /// Blur overrides.
-    pub blur: BlurRule,
     /// Tab indicator overrides.
     pub tab_indicator: TabIndicatorRule,
 
@@ -117,6 +115,12 @@ pub struct ResolvedWindowRules {
 
     /// Override whether to set the Tiled xdg-toplevel state on the window.
     pub tiled_state: Option<bool>,
+
+    /// Background effect configuration.
+    pub background_effect: BackgroundEffect,
+
+    /// Rules for this window's popups.
+    pub popups: ResolvedPopupsRules,
 }
 
 impl<'a> WindowRef<'a> {
@@ -262,7 +266,6 @@ impl ResolvedWindowRules {
                 resolved.border.merge_with(&rule.border);
                 resolved.shadow.merge_with(&rule.shadow);
                 resolved.tab_indicator.merge_with(&rule.tab_indicator);
-                resolved.blur.merge_with(&rule.blur);
 
                 if let Some(x) = rule.draw_border_with_background {
                     resolved.draw_border_with_background = Some(x);
@@ -291,6 +294,12 @@ impl ResolvedWindowRules {
                 if let Some(x) = rule.tiled_state {
                     resolved.tiled_state = Some(x);
                 }
+
+                resolved
+                    .background_effect
+                    .merge_with(&rule.background_effect);
+
+                resolved.popups.merge_with(&rule.popups);
             }
 
             resolved.open_on_output = open_on_output.map(|x| x.to_owned());

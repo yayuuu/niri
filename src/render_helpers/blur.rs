@@ -1,935 +1,342 @@
-// Ported from https://github.com/nferhat/fht-compositor/blob/main/src/renderer/blur/mod.rs
-
-pub mod element;
-pub mod optimized_blur_texture_element;
-pub(super) mod shader;
-
-pub use element::OverviewZoom;
-
-use anyhow::Context;
-use std::cell::{RefCell, RefMut};
+use std::cmp::max;
+use std::iter::{once, zip};
 use std::rc::Rc;
 
-use glam::{Mat3, Vec2};
-use niri_config::Blur;
-use smithay::backend::renderer::element::RenderElement;
-use smithay::backend::renderer::gles::format::fourcc_to_gl_formats;
-use smithay::backend::renderer::gles::{ffi, Capability, GlesError, GlesRenderer, GlesTexture};
-use smithay::backend::renderer::{Bind, Blit, Frame, Offscreen, Renderer, Texture, TextureFilter};
-use smithay::output::Output;
-use smithay::reexports::gbm::Format;
-use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Size, Transform};
+use anyhow::{ensure, Context as _};
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::gles::{ffi, link_program, GlesError, GlesRenderer, GlesTexture};
+use smithay::backend::renderer::{ContextId, Renderer as _, Texture as _};
+use smithay::gpu_span_location;
+use smithay::utils::{Buffer, Size};
 
-use crate::render_helpers::renderer::NiriRenderer;
-use shader::BlurShaders;
+use crate::render_helpers::shaders::Shaders;
 
-use super::render_data::RendererData;
-use super::render_elements;
-use super::shaders::Shaders;
-
-use std::time::{Duration, Instant};
-
-const DEFAULT_BLUR_RERENDER_INTERVAL: Duration = Duration::from_millis(150);
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum CurrentBuffer {
-    /// We are currently sampling from normal buffer, and rendering in the swapped/alternative.
-    #[default]
-    Normal,
-    /// We are currently sampling from swapped buffer, and rendering in the normal.
-    Swapped,
-}
-
-impl CurrentBuffer {
-    pub fn swap(&mut self) {
-        *self = match self {
-            // sampled from normal, render to swapped
-            Self::Normal => Self::Swapped,
-            // sampled fro swapped, render to normal next
-            Self::Swapped => Self::Normal,
-        }
-    }
-}
-
-/// Effect framebuffers associated with each output.
 #[derive(Debug)]
-pub struct EffectsFramebuffers {
-    /// Contains the main buffer blurred contents
-    optimized_blur: GlesTexture,
-    /// Whether the optimizer blur buffer is dirty
-    optimized_blur_rerender_at: Option<Instant>,
-    /// Generation counter for optimized blur updates.
-    optimized_blur_generation: u64,
-    // /// Contains the original pixels before blurring to draw with in case of artifacts.
-    // blur_saved_pixels: GlesTexture,
-    // The blur algorithms (dual-kawase) swaps between these two whenever scaling the image
-    effects: GlesTexture,
-    effects_swapped: GlesTexture,
-    /// The buffer we are currently rendering/sampling from.
+pub struct Blur {
+    program: BlurProgram,
+    /// Context ID of the renderer that created the program and the textures.
+    renderer_context_id: ContextId<GlesTexture>,
+    /// Output texture followed by intermediate textures, large to small.
     ///
-    /// In order todo the up/downscaling, we render into different buffers. On each pass, we render
-    /// into a different buffer with downscaling/upscaling (depending on which pass we are at)
-    ///
-    /// One exception is that if we are on the first pass, we are on [`CurrentBuffer::Initial`], we
-    /// are sampling from [`Self::blit_buffer`] from initial screen contents.
-    current_buffer: CurrentBuffer,
-    /// Size of the output that this object runs on.
-    output_size: Size<i32, Physical>,
-    /// Transform of the output.
-    transform: Transform,
+    /// Created lazily and stored here to avoid recreating blur textures frequently.
+    textures: Vec<GlesTexture>,
 }
 
-pub type EffectsFramebuffersUserData = Rc<RefCell<EffectsFramebuffers>>;
-
-fn get_rerender_at(fps: Option<f32>) -> Option<Instant> {
-    let interval = fps
-        .filter(|fps| *fps > 0.)
-        .map(|fps| Duration::from_secs_f32(1. / fps))
-        .unwrap_or(DEFAULT_BLUR_RERENDER_INTERVAL);
-
-    Some(Instant::now() + interval)
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct BlurOptions {
+    pub passes: u8,
+    pub offset: f64,
 }
 
-impl EffectsFramebuffers {
-    /// Get the associated [`EffectsFramebuffers`] with this output.
-    pub fn get<'a>(output: &'a Output) -> Option<RefMut<'a, Self>> {
-        output
-            .user_data()
-            .get::<EffectsFramebuffersUserData>()
-            .map(|e| e.borrow_mut())
-    }
-
-    pub fn get_user_data(output: &Output) -> Option<EffectsFramebuffersUserData> {
-        output.user_data().get().cloned()
-    }
-
-    pub fn set_dirty(output: &Output) {
-        let Some(mut fx_buffers) = Self::get(output) else {
-            warn!("attempting to set fx buffer to dirty on output that has none: {output:?}");
-            return;
-        };
-
-        if fx_buffers.optimized_blur_rerender_at.is_none() {
-            fx_buffers.optimized_blur_rerender_at = get_rerender_at(None);
+impl From<niri_config::Blur> for BlurOptions {
+    fn from(config: niri_config::Blur) -> Self {
+        Self {
+            passes: config.passes,
+            offset: config.offset,
         }
     }
+}
 
-    /// Initialize the [`EffectsFramebuffers`] for an [`Output`].
-    ///
-    /// The framebuffers handles live inside the Output's user data, use [`Self::get`] to access
-    /// them.
-    pub fn init_for_output(
-        output: &Output,
-        renderer: &mut impl NiriRenderer,
-        orientation: Option<Transform>,
-    ) {
-        let renderer = renderer.as_gles_renderer();
-        let transform = orientation.unwrap_or_else(|| output.current_transform());
-        let texture_size = transform.transform_size(output.current_mode().unwrap().size);
+#[derive(Debug, Clone)]
+pub struct BlurProgram(Rc<BlurProgramInner>);
 
-        let create_buffer = |renderer: &mut GlesRenderer, size: Size<i32, Physical>| {
-            renderer.create_buffer(
-                Format::Abgr8888,
-                size.to_logical(1).to_buffer(1, Transform::Normal),
-            )
-        };
+#[derive(Debug)]
+struct BlurProgramInner {
+    down: BlurProgramInternal,
+    up: BlurProgramInternal,
+}
 
-        let this = EffectsFramebuffers {
-            optimized_blur: create_buffer(renderer, texture_size).unwrap(),
-            optimized_blur_rerender_at: get_rerender_at(None),
-            optimized_blur_generation: 0,
-            effects: create_buffer(renderer, texture_size).unwrap(),
-            effects_swapped: create_buffer(renderer, texture_size).unwrap(),
-            current_buffer: CurrentBuffer::Normal,
-            output_size: texture_size,
-            transform,
-        };
+#[derive(Debug)]
+struct BlurProgramInternal {
+    program: ffi::types::GLuint,
+    uniform_tex: ffi::types::GLint,
+    uniform_half_pixel: ffi::types::GLint,
+    uniform_offset: ffi::types::GLint,
+    attrib_vert: ffi::types::GLint,
+}
 
-        let user_data = output.user_data();
-        assert!(
-            user_data.insert_if_missing(|| Rc::new(RefCell::new(this))),
-            "EffectsFrambuffers::init_for_output should only be called once!"
-        );
+unsafe fn compile_program(gl: &ffi::Gles2, src: &str) -> Result<BlurProgramInternal, GlesError> {
+    let program = unsafe { link_program(gl, include_str!("shaders/blur.vert"), src)? };
+
+    let vert = c"vert";
+    let tex = c"tex";
+    let half_pixel = c"half_pixel";
+    let offset = c"offset";
+
+    Ok(BlurProgramInternal {
+        program,
+        uniform_tex: gl.GetUniformLocation(program, tex.as_ptr()),
+        uniform_half_pixel: gl.GetUniformLocation(program, half_pixel.as_ptr()),
+        uniform_offset: gl.GetUniformLocation(program, offset.as_ptr()),
+        attrib_vert: gl.GetAttribLocation(program, vert.as_ptr()),
+    })
+}
+
+impl BlurProgram {
+    pub fn compile(renderer: &mut GlesRenderer) -> anyhow::Result<Self> {
+        renderer
+            .with_context(move |gl| unsafe {
+                let down = compile_program(gl, include_str!("shaders/blur_down.frag"))
+                    .context("error compiling blur_down shader")?;
+                let up = compile_program(gl, include_str!("shaders/blur_up.frag"))
+                    .context("error compiling blur_up shader")?;
+                Ok(Self(Rc::new(BlurProgramInner { down, up })))
+            })
+            .context("error making GL context current")?
     }
 
-    /// Update the [`EffectsFramebuffers`] for an [`Output`].
-    ///
-    /// You should call this if the output's scale/size changes
-    pub fn update_for_output(
-        output: &Output,
-        renderer: &mut impl NiriRenderer,
-        orientation: Option<Transform>,
-    ) -> Result<(), GlesError> {
-        let renderer = renderer.as_gles_renderer();
-        let Some(mut fx_buffers) = Self::get(output) else {
-            warn!("attempting to update fx buffer on output that has none: {output:?}");
-            return Ok(()); // TODO: error?
-        };
+    pub fn destroy(self, renderer: &mut GlesRenderer) -> Result<(), GlesError> {
+        renderer.with_context(move |gl| unsafe {
+            gl.DeleteProgram(self.0.down.program);
+            gl.DeleteProgram(self.0.up.program);
+        })
+    }
+}
 
-        let transform = orientation.unwrap_or_else(|| output.current_transform());
-        let texture_size = transform.transform_size(output.current_mode().unwrap().size);
+impl Blur {
+    pub fn new(renderer: &mut GlesRenderer) -> Option<Self> {
+        let program = Shaders::get(renderer).blur.clone()?;
+        Some(Self {
+            program,
+            renderer_context_id: renderer.context_id(),
+            textures: Vec::new(),
+        })
+    }
 
-        let create_buffer = |renderer: &mut GlesRenderer, size: Size<i32, Physical>| {
-            renderer.create_buffer(
-                Format::Abgr8888,
-                size.to_logical(1).to_buffer(1, Transform::Normal),
-            )
-        };
+    pub fn context_id(&self) -> ContextId<GlesTexture> {
+        self.renderer_context_id.clone()
+    }
 
-        *fx_buffers = EffectsFramebuffers {
-            optimized_blur: create_buffer(renderer, texture_size)?,
-            optimized_blur_rerender_at: get_rerender_at(None),
-            optimized_blur_generation: 0,
-            effects: create_buffer(renderer, texture_size)?,
-            effects_swapped: create_buffer(renderer, texture_size)?,
-            current_buffer: CurrentBuffer::Normal,
-            output_size: texture_size,
-            transform,
-        };
+    pub fn prepare_textures(
+        &mut self,
+        mut create_texture: impl FnMut(Fourcc, Size<i32, Buffer>) -> Result<GlesTexture, GlesError>,
+        source: &GlesTexture,
+        options: BlurOptions,
+    ) -> anyhow::Result<()> {
+        let _span = tracy_client::span!("Blur::prepare_textures");
+
+        let passes = options.passes.clamp(1, 31) as usize;
+        let size = source.size();
+
+        if let Some(output) = self.textures.first_mut() {
+            let old_size = output.size();
+            if old_size != size {
+                trace!(
+                    "recreating textures: output size changed from {} × {} to {} × {}",
+                    old_size.w,
+                    old_size.h,
+                    size.w,
+                    size.h
+                );
+                self.textures.clear();
+            } else if !output.is_unique_reference() {
+                debug!("recreating textures: not unique",);
+                // We only need to recreate the output texture here, but this case shouldn't really
+                // happen anyway, and this is simpler.
+                self.textures.clear();
+            }
+        }
+
+        // Create any missing textures.
+        let mut w = size.w;
+        let mut h = size.h;
+        for i in 0..=passes {
+            let size = Size::new(w, h);
+            w = max(1, w / 2);
+            h = max(1, h / 2);
+
+            if self.textures.len() > i {
+                // This texture already exists.
+                continue;
+            }
+
+            // debug!("creating texture for step {i} sized {w} × {h}");
+
+            let texture: GlesTexture =
+                create_texture(Fourcc::Abgr8888, size).context("error creating texture")?;
+            self.textures.push(texture);
+        }
+
+        // Drop any no longer needed textures.
+        self.textures.drain(passes + 1..);
 
         Ok(())
     }
 
-    /// Render the optimized blur buffer again
-    pub fn update_optimized_blur_buffer(
+    pub fn render(
         &mut self,
         renderer: &mut GlesRenderer,
-        scale: Scale<f64>,
-        config: Blur,
-        rerender_fps: Option<f32>,
-        elements: impl Iterator<Item = impl RenderElement<GlesRenderer>>,
-    ) -> anyhow::Result<()> {
-        let now = Instant::now();
-        let rerender_fps = rerender_fps.filter(|fps| *fps > 0.);
-        if let Some(fps) = rerender_fps {
-            let interval = Duration::from_secs_f32(1. / fps);
-            match self.optimized_blur_rerender_at {
-                Some(next) if next > now + interval => {
-                    self.optimized_blur_rerender_at = Some(now);
-                }
-                Some(next) if next > now => return Ok(()),
-                _ => {}
-            }
-        } else if matches!(self.optimized_blur_rerender_at, Some(t) if t > now) {
-            return Ok(());
-        }
+        source: &GlesTexture,
+        options: BlurOptions,
+    ) -> anyhow::Result<GlesTexture> {
+        let _span = tracy_client::span!("Blur::render");
+        trace!("rendering blur");
 
-        self.optimized_blur_rerender_at = get_rerender_at(rerender_fps);
-
-        let mut fb = renderer.bind(&mut self.effects).unwrap();
-
-        let _ = render_elements(
-            renderer,
-            &mut fb,
-            self.output_size,
-            scale,
-            Transform::Normal,
-            elements,
-        )
-        .expect("failed to render for optimized blur buffer");
-        drop(fb);
-
-        self.current_buffer = CurrentBuffer::Normal;
-
-        let shaders = Shaders::get(renderer).blur.clone();
-
-        // NOTE: If we only do one pass its kinda ugly, there must be at least
-        // n=2 passes in order to have good sampling
-        let half_pixel = [
-            0.5 / (self.output_size.w as f32 / 2.0),
-            0.5 / (self.output_size.h as f32 / 2.0),
-        ];
-
-        for _ in 0..config.passes {
-            let (sample_buffer, render_buffer) = self.buffers();
-            render_blur_pass_with_frame(
-                renderer,
-                sample_buffer,
-                render_buffer,
-                &shaders.down,
-                half_pixel,
-                config,
-            )?;
-            self.current_buffer.swap();
-        }
-
-        let half_pixel = [
-            0.5 / (self.output_size.w as f32 * 2.0),
-            0.5 / (self.output_size.h as f32 * 2.0),
-        ];
-        // FIXME: Why we need inclusive here but down is exclusive?
-        for _ in 0..config.passes {
-            let (sample_buffer, render_buffer) = self.buffers();
-            render_blur_pass_with_frame(
-                renderer,
-                sample_buffer,
-                render_buffer,
-                &shaders.up,
-                half_pixel,
-                config,
-            )?;
-            self.current_buffer.swap();
-        }
-
-        // Now blit from the last render buffer into optimized_blur
-        // We are already bound so its just a blit
-        let tex_fb = renderer.bind(&mut self.effects).unwrap();
-        let mut optimized_blur_fb = renderer.bind(&mut self.optimized_blur).unwrap();
-
-        let _ = renderer.blit(
-            &tex_fb,
-            &mut optimized_blur_fb,
-            Rectangle::from_size(self.output_size),
-            Rectangle::from_size(self.output_size),
-            TextureFilter::Linear,
-        )?;
-
-        self.optimized_blur_generation = self.optimized_blur_generation.wrapping_add(1);
-
-        Ok(())
-    }
-
-    /// Get the sample and render buffers.
-    pub fn buffers(&mut self) -> (&GlesTexture, &mut GlesTexture) {
-        match self.current_buffer {
-            CurrentBuffer::Normal => (&self.effects, &mut self.effects_swapped),
-            CurrentBuffer::Swapped => (&self.effects_swapped, &mut self.effects),
-        }
-    }
-
-    pub fn output_size(&self) -> Size<i32, Physical> {
-        self.output_size
-    }
-
-    pub fn transform(&self) -> Transform {
-        self.transform
-    }
-
-    pub fn optimized_blur_generation(&self) -> u64 {
-        self.optimized_blur_generation
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) unsafe fn get_main_buffer_blur(
-    gl: &ffi::Gles2,
-    fx_buffers: &mut EffectsFramebuffers,
-    shaders: &BlurShaders,
-    blur_config: Blur,
-    projection_matrix: Mat3,
-    scale: i32,
-    vbos: &[u32; 2],
-    debug: bool,
-    supports_instancing: bool,
-    // dst is the region that we want blur on
-    dst: Rectangle<i32, Physical>,
-    texture_cache: &GlesTexture,
-    alpha_tex: Option<&GlesTexture>,
-) -> Result<GlesTexture, GlesError> {
-    let tex_size = fx_buffers
-        .effects
-        .size()
-        .to_logical(1, Transform::Normal)
-        .to_physical(scale);
-
-    let dst_expanded = {
-        let mut dst = dst;
-        let size =
-            (2f32.powi(blur_config.passes as i32 + 1) * blur_config.radius.0 as f32).ceil() as i32;
-        dst.loc -= Point::from((size, size)).upscale(8);
-        dst.size += Size::from((size, size)).upscale(16);
-        dst
-    };
-
-    // let dst_expanded = fx_buffers
-    //     .transform()
-    //     .transform_rect_in(dst_expanded, &tex_size);
-
-    let mut prev_fbo = 0;
-    gl.GetIntegerv(ffi::FRAMEBUFFER_BINDING, &mut prev_fbo as *mut _);
-
-    let (sample_buffer, _) = fx_buffers.buffers();
-
-    // First get a fbo for the texture we are about to read into
-    let mut sample_fbo = 0u32;
-    {
-        gl.GenFramebuffers(1, &mut sample_fbo as *mut _);
-        gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, sample_fbo);
-        gl.FramebufferTexture2D(
-            ffi::FRAMEBUFFER,
-            ffi::COLOR_ATTACHMENT0,
-            ffi::TEXTURE_2D,
-            sample_buffer.tex_id(),
-            0,
-        );
-        let status = gl.CheckFramebufferStatus(ffi::FRAMEBUFFER);
-        if status != ffi::FRAMEBUFFER_COMPLETE {
-            gl.DeleteFramebuffers(1, &mut sample_fbo as *mut _);
-            return Err(GlesError::FramebufferBindingError);
-        }
-    }
-
-    if let Some(alpha_tex) = alpha_tex {
-        gl.ActiveTexture(ffi::TEXTURE1);
-        gl.BindTexture(ffi::TEXTURE_2D, alpha_tex.tex_id());
-        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
-        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
-    }
-
-    {
-        // TODO: need to rotate blur texture on transformed screens
-
-        // NOTE: We are assured that the size of the effects texture is the same
-        // as the bound fbo size, so blitting uses dst immediately
-        gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, sample_fbo);
-
-        let dst_x0 = dst_expanded.loc.x;
-        let dst_y0 = dst_expanded.loc.y;
-        let dst_x1 = dst_expanded.loc.x + dst_expanded.size.w;
-        let dst_y1 = dst_expanded.loc.y + dst_expanded.size.h;
-
-        let src_expanded = fx_buffers
-            .transform()
-            .invert()
-            .transform_rect_in(dst_expanded, &tex_size);
-
-        let src_x0 = src_expanded.loc.x;
-        let src_y0 = src_expanded.loc.y;
-        let src_x1 = src_expanded.loc.x + src_expanded.size.w;
-        let src_y1 = src_expanded.loc.y + src_expanded.size.h;
-
-        gl.BlitFramebuffer(
-            src_x0,
-            src_y0,
-            src_x1,
-            src_y1,
-            dst_x0,
-            dst_y0,
-            dst_x1,
-            dst_y1,
-            ffi::COLOR_BUFFER_BIT,
-            ffi::LINEAR,
+        ensure!(
+            renderer.context_id() == self.renderer_context_id,
+            "wrong renderer"
         );
 
-        if gl.GetError() == ffi::INVALID_OPERATION {
-            error!("TrueBlur needs GLES3.0 for blitting");
-            return Err(GlesError::BlitError);
-        }
-    }
+        let passes = options.passes.clamp(1, 31) as usize;
+        let size = source.size();
 
-    {
-        let passes = blur_config.passes;
-        let half_pixel = [
-            0.5 / (tex_size.w as f32 / 2.0),
-            0.5 / (tex_size.h as f32 / 2.0),
-        ];
-
-        for i in 0..passes {
-            let (sample_buffer, render_buffer) = fx_buffers.buffers();
-            let damage = dst_expanded.downscale(1 << (i + 1));
-            render_blur_pass_with_gl(
-                gl,
-                vbos,
-                debug,
-                supports_instancing,
-                projection_matrix,
-                sample_buffer,
-                render_buffer,
-                scale,
-                &shaders.down,
-                half_pixel,
-                blur_config,
-                damage,
-            )?;
-            fx_buffers.current_buffer.swap();
-        }
-
-        let half_pixel = [
-            0.5 / (tex_size.w as f32 * 2.0),
-            0.5 / (tex_size.h as f32 * 2.0),
-        ];
-        for i in 0..passes {
-            let (sample_buffer, render_buffer) = fx_buffers.buffers();
-            let damage = dst_expanded.downscale(1 << (passes - 1 - i));
-            render_blur_pass_with_gl(
-                gl,
-                vbos,
-                debug,
-                supports_instancing,
-                projection_matrix,
-                sample_buffer,
-                render_buffer,
-                scale,
-                &shaders.up,
-                half_pixel,
-                blur_config,
-                damage,
-            )?;
-            fx_buffers.current_buffer.swap();
-        }
-    }
-
-    // Copy over cached texture
-    {
-        let mut tex_cache_fbo = 0;
-
-        gl.GenFramebuffers(1, &mut tex_cache_fbo as *mut _);
-        gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, tex_cache_fbo);
-        gl.FramebufferTexture2D(
-            ffi::DRAW_FRAMEBUFFER,
-            ffi::COLOR_ATTACHMENT0,
-            ffi::TEXTURE_2D,
-            texture_cache.tex_id(),
-            0,
-        );
-        let status = gl.CheckFramebufferStatus(ffi::DRAW_FRAMEBUFFER);
-        if status != ffi::FRAMEBUFFER_COMPLETE {
-            gl.DeleteFramebuffers(1, &mut tex_cache_fbo as *mut _);
-            return Err(GlesError::FramebufferBindingError);
-        }
-        gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, tex_cache_fbo);
-
-        let mut render_buffer_fbo = 0;
-
-        gl.GenFramebuffers(1, &mut render_buffer_fbo as *mut _);
-        gl.BindFramebuffer(ffi::READ_FRAMEBUFFER, render_buffer_fbo);
-        gl.FramebufferTexture2D(
-            ffi::READ_FRAMEBUFFER,
-            ffi::COLOR_ATTACHMENT0,
-            ffi::TEXTURE_2D,
-            fx_buffers.effects.tex_id(),
-            0,
-        );
-        let status = gl.CheckFramebufferStatus(ffi::READ_FRAMEBUFFER);
-        if status != ffi::FRAMEBUFFER_COMPLETE {
-            gl.DeleteFramebuffers(1, &mut render_buffer_fbo as *mut _);
-            return Err(GlesError::FramebufferBindingError);
-        }
-        gl.BindFramebuffer(ffi::READ_FRAMEBUFFER, render_buffer_fbo);
-
-        let dst_x0 = dst_expanded.loc.x;
-        let dst_y0 = dst_expanded.loc.y;
-        let dst_x1 = dst_expanded.loc.x + dst_expanded.size.w;
-        let dst_y1 = dst_expanded.loc.y + dst_expanded.size.h;
-
-        let src_x0 = dst_x0;
-        let src_y0 = dst_y0;
-        let src_x1 = dst_x1;
-        let src_y1 = dst_y1;
-
-        gl.BlitFramebuffer(
-            src_x0,
-            src_y0,
-            src_x1,
-            src_y1,
-            dst_x0,
-            dst_y0,
-            dst_x1,
-            dst_y1,
-            ffi::COLOR_BUFFER_BIT,
-            ffi::LINEAR,
+        ensure!(
+            self.textures.len() == passes + 1,
+            "wrong textures len: expected {}, got {}",
+            passes + 1,
+            self.textures.len()
         );
 
-        if gl.GetError() == ffi::INVALID_OPERATION {
-            error!("TrueBlur needs GLES3.0 for blitting");
-            return Err(GlesError::BlitError);
-        }
+        let output = &mut self.textures[0];
+        ensure!(
+            output.size() == size,
+            "wrong output texture size: expected {size:?}, got {:?}",
+            output.size()
+        );
 
-        gl.DeleteFramebuffers(1, &mut tex_cache_fbo as *mut _);
-        gl.DeleteFramebuffers(1, &mut render_buffer_fbo as *mut _);
-    }
+        ensure!(
+            output.is_unique_reference(),
+            "output texture has a non-unique reference"
+        );
 
-    // Cleanup
-    {
-        gl.DeleteFramebuffers(1, &mut sample_fbo as *mut _);
-        gl.BindFramebuffer(ffi::FRAMEBUFFER, prev_fbo as u32);
-    }
+        renderer.with_profiled_context(gpu_span_location!("Blur::render"), |gl| unsafe {
+            while gl.GetError() != ffi::NO_ERROR {}
 
-    Ok(fx_buffers.effects.clone())
-}
+            gl.Disable(ffi::BLEND);
+            gl.Disable(ffi::SCISSOR_TEST);
 
-// Renders a blur pass using a GlesFrame with syncing and fencing provided by smithay. Used for
-// updating optimized blur buffer since we are not yet rendering.
-fn render_blur_pass_with_frame(
-    renderer: &mut GlesRenderer,
-    sample_buffer: &GlesTexture,
-    render_buffer: &mut GlesTexture,
-    blur_program: &shader::BlurShader,
-    half_pixel: [f32; 2],
-    config: Blur,
-) -> anyhow::Result<()> {
-    trace!("rendering blur pass with frame");
-    // We use a texture render element with a custom GlesTexProgram in order todo the blurring
-    // At least this is what swayfx/scenefx do, but they just use gl calls directly.
-    let size = sample_buffer.size().to_logical(1, Transform::Flipped);
+            gl.ActiveTexture(ffi::TEXTURE0);
 
-    let vbos = RendererData::get(renderer).vbos;
-    let is_shared = renderer.egl_context().is_shared();
+            let mut fbos = [0; 2];
+            gl.GenFramebuffers(fbos.len() as _, fbos.as_mut_ptr());
+            gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, fbos[0]);
 
-    let mut fb = renderer.bind(render_buffer)?;
-    // Using GlesFrame since I want to use a custom program
-    let mut frame = renderer
-        .render(&mut fb, size.to_physical(1), Transform::Normal)
-        .context("failed to create frame")?;
+            let program = &self.program.0.down;
+            gl.UseProgram(program.program);
+            gl.Uniform1i(program.uniform_tex, 0);
+            gl.Uniform1f(program.uniform_offset, options.offset as f32);
 
-    let supports_instaning = frame.capabilities().contains(&Capability::Instancing);
-    let debug = !frame.debug_flags().is_empty();
-    let projection = Mat3::from_cols_array(frame.projection());
+            let vertices: [f32; 12] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0];
+            gl.EnableVertexAttribArray(program.attrib_vert as u32);
+            gl.BindBuffer(ffi::ARRAY_BUFFER, 0);
+            gl.VertexAttribPointer(
+                program.attrib_vert as u32,
+                2,
+                ffi::FLOAT,
+                ffi::FALSE,
+                0,
+                vertices.as_ptr().cast(),
+            );
 
-    let tex_size = sample_buffer.size();
-    let src = Rectangle::from_size(sample_buffer.size()).to_f64();
-    let dst = Rectangle::from_size(size).to_physical(1);
+            let src = once(source).chain(&self.textures[1..]);
+            let dst = &self.textures[1..];
+            for (src, dst) in zip(src, dst) {
+                let dst_size = dst.size();
+                let w = dst_size.w;
+                let h = dst_size.h;
+                gl.Viewport(0, 0, w, h);
 
-    frame.with_context(|gl| unsafe {
-        // We are doing basically what Frame::render_texture_from_to does, but our own shader struct
-        // instead. This allows me to get into the gl plumbing.
+                // During downsampling, half_pixel is half of the destination pixel.
+                gl.Uniform2f(program.uniform_half_pixel, 0.5 / w as f32, 0.5 / h as f32);
 
-        // NOTE: We are rendering at the origin of the texture, no need to translate
-        let mut mat = Mat3::IDENTITY;
-        let src_size = sample_buffer.size().to_f64();
+                let src = src.tex_id();
+                let dst = dst.tex_id();
 
-        if tex_size.is_empty() || src_size.is_empty() {
-            return Ok(());
-        }
+                trace!("drawing down {src} to {dst}");
+                gl.FramebufferTexture2D(
+                    ffi::DRAW_FRAMEBUFFER,
+                    ffi::COLOR_ATTACHMENT0,
+                    ffi::TEXTURE_2D,
+                    dst,
+                    0,
+                );
 
-        let mut tex_mat = build_texture_mat(src, dst, tex_size, Transform::Normal);
-        if sample_buffer.is_y_inverted() {
-            tex_mat *= Mat3::from_cols_array(&[1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0]);
-        }
+                gl.BindTexture(ffi::TEXTURE_2D, src);
+                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
+                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
+                gl.TexParameteri(
+                    ffi::TEXTURE_2D,
+                    ffi::TEXTURE_WRAP_S,
+                    ffi::CLAMP_TO_EDGE as i32,
+                );
+                gl.TexParameteri(
+                    ffi::TEXTURE_2D,
+                    ffi::TEXTURE_WRAP_T,
+                    ffi::CLAMP_TO_EDGE as i32,
+                );
 
-        // NOTE: We know that this texture is always opaque so skip on some logic checks and
-        // directly render. The following code is from GlesRenderer::render_texture
-        gl.Disable(ffi::BLEND);
-
-        // Since we are just rendering onto the offsreen buffer, the vertices to draw are only 4
-        let damage = [
-            dst.loc.x as f32,
-            dst.loc.y as f32,
-            dst.size.w as f32,
-            dst.size.h as f32,
-        ];
-
-        let mut vertices = Vec::with_capacity(4);
-        let damage_len = if supports_instaning {
-            vertices.extend(damage);
-            vertices.len() / 4
-        } else {
-            for _ in 0..6 {
-                // Add the 4 f32s per damage rectangle for each of the 6 vertices.
-                vertices.extend_from_slice(&damage);
+                gl.DrawArrays(ffi::TRIANGLES, 0, 6);
             }
 
-            1
-        };
+            gl.DisableVertexAttribArray(program.attrib_vert as u32);
 
-        mat *= projection;
+            // Up
+            let program = &self.program.0.up;
+            gl.UseProgram(program.program);
+            gl.Uniform1i(program.uniform_tex, 0);
+            gl.Uniform1f(program.uniform_offset, options.offset as f32);
 
-        // SAFETY: internal texture should always have a format
-        // We also use Abgr8888 which is known and confirmed
-        let (internal_format, _, _) =
-            fourcc_to_gl_formats(sample_buffer.format().unwrap()).unwrap();
-        let variant = blur_program.variant_for_format(Some(internal_format), false);
+            let vertices: [f32; 12] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0];
+            gl.EnableVertexAttribArray(program.attrib_vert as u32);
+            gl.BindBuffer(ffi::ARRAY_BUFFER, 0);
+            gl.VertexAttribPointer(
+                program.attrib_vert as u32,
+                2,
+                ffi::FLOAT,
+                ffi::FALSE,
+                0,
+                vertices.as_ptr().cast(),
+            );
 
-        let program = if debug {
-            &variant.debug
-        } else {
-            &variant.normal
-        };
+            let src = self.textures.iter().rev();
+            let dst = self.textures.iter().rev().skip(1);
+            for (src, dst) in zip(src, dst) {
+                let dst_size = dst.size();
+                let w = dst_size.w;
+                let h = dst_size.h;
+                gl.Viewport(0, 0, w, h);
 
-        gl.ActiveTexture(ffi::TEXTURE0);
-        gl.BindTexture(ffi::TEXTURE_2D, sample_buffer.tex_id());
-        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
-        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
-        gl.UseProgram(program.program);
+                // During upsampling, half_pixel is half of the source pixel.
+                let src_size = src.size();
+                let src_w = src_size.w as f32;
+                let src_h = src_size.h as f32;
+                gl.Uniform2f(program.uniform_half_pixel, 0.5 / src_w, 0.5 / src_h);
 
-        gl.Uniform1i(program.uniform_tex, 0);
+                let src = src.tex_id();
+                let dst = dst.tex_id();
 
-        gl.UniformMatrix3fv(
-            program.uniform_matrix,
-            1,
-            ffi::FALSE,
-            mat.as_ref() as *const f32,
-        );
-        gl.UniformMatrix3fv(
-            program.uniform_tex_matrix,
-            1,
-            ffi::FALSE,
-            tex_mat.as_ref() as *const f32,
-        );
-        gl.Uniform1f(program.uniform_alpha, 1.0);
-        gl.Uniform1f(program.uniform_radius, config.radius.0 as f32);
-        gl.Uniform2f(program.uniform_half_pixel, half_pixel[0], half_pixel[1]);
+                trace!("drawing up {src} to {dst}");
+                gl.FramebufferTexture2D(
+                    ffi::DRAW_FRAMEBUFFER,
+                    ffi::COLOR_ATTACHMENT0,
+                    ffi::TEXTURE_2D,
+                    dst,
+                    0,
+                );
 
-        gl.EnableVertexAttribArray(program.attrib_vert as u32);
-        gl.BindBuffer(ffi::ARRAY_BUFFER, vbos[0]);
-        gl.VertexAttribPointer(
-            program.attrib_vert as u32,
-            2,
-            ffi::FLOAT,
-            ffi::FALSE,
-            0,
-            std::ptr::null(),
-        );
+                gl.BindTexture(ffi::TEXTURE_2D, src);
+                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
+                gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
+                gl.TexParameteri(
+                    ffi::TEXTURE_2D,
+                    ffi::TEXTURE_WRAP_S,
+                    ffi::CLAMP_TO_EDGE as i32,
+                );
+                gl.TexParameteri(
+                    ffi::TEXTURE_2D,
+                    ffi::TEXTURE_WRAP_T,
+                    ffi::CLAMP_TO_EDGE as i32,
+                );
 
-        // vert_position
-        gl.EnableVertexAttribArray(program.attrib_vert_position as u32);
-        gl.BindBuffer(ffi::ARRAY_BUFFER, 0);
-
-        gl.VertexAttribPointer(
-            program.attrib_vert_position as u32,
-            4,
-            ffi::FLOAT,
-            ffi::FALSE,
-            0,
-            vertices.as_ptr() as *const _,
-        );
-
-        if supports_instaning {
-            gl.VertexAttribDivisor(program.attrib_vert as u32, 0);
-            gl.VertexAttribDivisor(program.attrib_vert_position as u32, 1);
-            gl.DrawArraysInstanced(ffi::TRIANGLE_STRIP, 0, 4, damage_len as i32);
-        } else {
-            let count = damage_len * 6;
-            gl.DrawArrays(ffi::TRIANGLES, 0, count as i32);
-        }
-
-        gl.BindTexture(ffi::TEXTURE_2D, 0);
-        gl.DisableVertexAttribArray(program.attrib_vert as u32);
-        gl.DisableVertexAttribArray(program.attrib_vert_position as u32);
-
-        gl.Enable(ffi::BLEND);
-        gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
-
-        // FIXME: Check for Fencing support
-        if is_shared {
-            gl.Finish();
-        }
-
-        Result::<_, GlesError>::Ok(())
-    })??;
-
-    let _sync_point = frame.finish()?;
-
-    Ok(())
-}
-
-// Renders a blur pass using gl code bypassing smithay's Frame mechanisms
-//
-// When rendering blur in real-time (for windows, for example) there should not be a wait for
-// fencing/finishing since this will be done when sending the fb to the output. Using a Frame
-// forces us to do that.
-#[allow(clippy::too_many_arguments)]
-unsafe fn render_blur_pass_with_gl(
-    gl: &ffi::Gles2,
-    vbos: &[u32; 2],
-    debug: bool,
-    supports_instancing: bool,
-    projection_matrix: Mat3,
-    // The buffers used for blurring
-    sample_buffer: &GlesTexture,
-    render_buffer: &mut GlesTexture,
-    scale: i32,
-    // The current blur program + config
-    blur_program: &shader::BlurShader,
-    half_pixel: [f32; 2],
-    config: Blur,
-    // dst is the region that should have blur
-    // it gets up/downscaled with passes
-    _damage: Rectangle<i32, Physical>,
-) -> Result<(), GlesError> {
-    trace!("rendering blur pass with GL");
-
-    let tex_size = sample_buffer.size();
-    let src = Rectangle::from_size(tex_size.to_f64());
-    let dest = src
-        .to_logical(1.0, Transform::Normal, &src.size)
-        .to_physical(scale as f64)
-        .to_i32_round();
-
-    let damage = dest;
-
-    // FIXME: Should we call gl.Finish() when done rendering this pass? If yes, should we check
-    // if the gl context is shared or not? What about fencing, we don't have access to that
-
-    // PERF: Instead of taking the whole src/dst as damage, adapt the code to run with only the
-    // damaged window? This would cause us to make a custom WaylandSurfaceRenderElement to blur out
-    // stuff. Complicated.
-
-    // First bind to our render buffer
-    let mut render_buffer_fbo = 0;
-    {
-        gl.GenFramebuffers(1, &mut render_buffer_fbo as *mut _);
-        gl.BindFramebuffer(ffi::FRAMEBUFFER, render_buffer_fbo);
-        gl.FramebufferTexture2D(
-            ffi::FRAMEBUFFER,
-            ffi::COLOR_ATTACHMENT0,
-            ffi::TEXTURE_2D,
-            render_buffer.tex_id(),
-            0,
-        );
-
-        let status = gl.CheckFramebufferStatus(ffi::FRAMEBUFFER);
-        if status != ffi::FRAMEBUFFER_COMPLETE {
-            return Err(GlesError::FramebufferBindingError);
-        }
-    }
-
-    {
-        let mat = projection_matrix;
-        // NOTE: We are assured that tex_size != 0, and src.size != too (by damage tracker)
-        let tex_mat = build_texture_mat(src, dest, tex_size, Transform::Normal);
-
-        gl.Disable(ffi::BLEND);
-
-        // FIXME: Use actual damage for this? Would require making a custom window render element
-        // that includes blur and whatnot to get the damage for the window only
-        let damage = [
-            damage.loc.x as f32,
-            damage.loc.y as f32,
-            damage.size.w as f32,
-            damage.size.h as f32,
-        ];
-
-        let mut vertices = Vec::with_capacity(4);
-        let damage_len = if supports_instancing {
-            vertices.extend(damage);
-            vertices.len() / 4
-        } else {
-            for _ in 0..6 {
-                // Add the 4 f32s per damage rectangle for each of the 6 vertices.
-                vertices.extend_from_slice(&damage);
+                gl.DrawArrays(ffi::TRIANGLES, 0, 6);
             }
 
-            1
-        };
+            gl.DisableVertexAttribArray(program.attrib_vert as u32);
 
-        // SAFETY: internal texture should always have a format
-        // We also use Abgr8888 which is known and confirmed
-        let (internal_format, _, _) =
-            fourcc_to_gl_formats(sample_buffer.format().unwrap()).unwrap();
-        let variant = blur_program.variant_for_format(Some(internal_format), false);
+            gl.BindFramebuffer(ffi::DRAW_FRAMEBUFFER, 0);
+            gl.DeleteFramebuffers(fbos.len() as _, fbos.as_ptr());
+        })?;
 
-        let program = if debug {
-            &variant.debug
-        } else {
-            &variant.normal
-        };
-
-        gl.ActiveTexture(ffi::TEXTURE0);
-        gl.BindTexture(ffi::TEXTURE_2D, sample_buffer.tex_id());
-        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
-        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
-
-        gl.UseProgram(program.program);
-
-        gl.Uniform1i(program.uniform_tex, 0);
-
-        gl.UniformMatrix3fv(
-            program.uniform_matrix,
-            1,
-            ffi::FALSE,
-            mat.as_ref() as *const f32,
-        );
-        gl.UniformMatrix3fv(
-            program.uniform_tex_matrix,
-            1,
-            ffi::FALSE,
-            tex_mat.as_ref() as *const f32,
-        );
-        gl.Uniform1f(program.uniform_alpha, 1.0);
-        gl.Uniform1f(program.uniform_radius, config.radius.0 as f32);
-        gl.Uniform2f(program.uniform_half_pixel, half_pixel[0], half_pixel[1]);
-
-        gl.EnableVertexAttribArray(program.attrib_vert as u32);
-        gl.BindBuffer(ffi::ARRAY_BUFFER, vbos[0]);
-        gl.VertexAttribPointer(
-            program.attrib_vert as u32,
-            2,
-            ffi::FLOAT,
-            ffi::FALSE,
-            0,
-            std::ptr::null(),
-        );
-
-        // vert_position
-        gl.EnableVertexAttribArray(program.attrib_vert_position as u32);
-        gl.BindBuffer(ffi::ARRAY_BUFFER, 0);
-
-        gl.VertexAttribPointer(
-            program.attrib_vert_position as u32,
-            4,
-            ffi::FLOAT,
-            ffi::FALSE,
-            0,
-            vertices.as_ptr() as *const _,
-        );
-
-        if supports_instancing {
-            gl.VertexAttribDivisor(program.attrib_vert as u32, 0);
-            gl.VertexAttribDivisor(program.attrib_vert_position as u32, 1);
-            gl.DrawArraysInstanced(ffi::TRIANGLE_STRIP, 0, 4, damage_len as i32);
-        } else {
-            let count = damage_len * 6;
-            gl.DrawArrays(ffi::TRIANGLES, 0, count as i32);
-        }
-
-        gl.BindTexture(ffi::TEXTURE_2D, 0);
-        gl.DisableVertexAttribArray(program.attrib_vert as u32);
-        gl.DisableVertexAttribArray(program.attrib_vert_position as u32);
+        Ok(self.textures[0].clone())
     }
-
-    // Clean up
-    {
-        gl.Enable(ffi::BLEND);
-        gl.DeleteFramebuffers(1, &render_buffer_fbo as *const _);
-        gl.BlendFunc(ffi::ONE, ffi::ONE_MINUS_SRC_ALPHA);
-        gl.BindFramebuffer(ffi::FRAMEBUFFER, 0);
-    }
-
-    Ok(())
-}
-
-// Copied from smithay, adapted to use glam structs
-fn build_texture_mat(
-    src: Rectangle<f64, Buffer>,
-    dest: Rectangle<i32, Physical>,
-    texture: Size<i32, Buffer>,
-    transform: Transform,
-) -> Mat3 {
-    let dst_src_size = transform.transform_size(src.size);
-    let scale = dst_src_size.to_f64() / dest.size.to_f64();
-
-    let mut tex_mat = Mat3::IDENTITY;
-    // first bring the damage into src scale
-    tex_mat = Mat3::from_scale(Vec2::new(scale.x as f32, scale.y as f32)) * tex_mat;
-
-    // then compensate for the texture transform
-    let transform_mat = Mat3::from_cols_array(transform.matrix().as_ref());
-    let translation = match transform {
-        Transform::Normal => Mat3::IDENTITY,
-        Transform::_90 => Mat3::from_translation(Vec2::new(0f32, dst_src_size.w as f32)),
-        Transform::_180 => {
-            Mat3::from_translation(Vec2::new(dst_src_size.w as f32, dst_src_size.h as f32))
-        }
-        Transform::_270 => Mat3::from_translation(Vec2::new(dst_src_size.h as f32, 0f32)),
-        Transform::Flipped => Mat3::from_translation(Vec2::new(dst_src_size.w as f32, 0f32)),
-        Transform::Flipped90 => Mat3::IDENTITY,
-        Transform::Flipped180 => Mat3::from_translation(Vec2::new(0f32, dst_src_size.h as f32)),
-        Transform::Flipped270 => {
-            Mat3::from_translation(Vec2::new(dst_src_size.h as f32, dst_src_size.w as f32))
-        }
-    };
-    tex_mat = transform_mat * tex_mat;
-    tex_mat = translation * tex_mat;
-
-    // now we can add the src crop loc, the size already done implicit by the src size
-    tex_mat = Mat3::from_translation(Vec2::new(src.loc.x as f32, src.loc.y as f32)) * tex_mat;
-
-    // at last we have to normalize the values for UV space
-    tex_mat = Mat3::from_scale(Vec2::new(
-        (1.0f64 / texture.w as f64) as f32,
-        (1.0f64 / texture.h as f64) as f32,
-    )) * tex_mat;
-
-    tex_mat
 }

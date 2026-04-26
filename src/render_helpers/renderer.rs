@@ -1,7 +1,7 @@
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{
-    Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, RendererSuper, Texture,
+    Bind, ExportMem, ImportAll, ImportMem, Offscreen, RendererSuper, Texture,
 };
 
 use crate::backend::tty::{TtyFrame, TtyRenderer};
@@ -13,7 +13,7 @@ pub trait NiriRenderer:
     + ExportMem
     + Bind<Dmabuf>
     + Offscreen<GlesTexture>
-    + Renderer<TextureId = Self::NiriTextureId, Error = Self::NiriError>
+    + RendererSuper<TextureId = Self::NiriTextureId, Error = Self::NiriError>
     + AsGlesRenderer
 {
     // Associated types to work around the instability of associated type bounds.
@@ -27,7 +27,13 @@ pub trait NiriRenderer:
 
 impl<R> NiriRenderer for R
 where
-    R: ImportAll + ImportMem + ExportMem + Bind<Dmabuf> + Offscreen<GlesTexture> + AsGlesRenderer,
+    R: ImportAll
+        + ImportMem
+        + ExportMem
+        + Bind<Dmabuf>
+        + Offscreen<GlesTexture>
+        + AsGlesRenderer
+        + RendererSuper,
     R::TextureId: Texture + Clone + Send + 'static,
     R::Error:
         std::error::Error + Send + Sync + From<<GlesRenderer as RendererSuper>::Error> + 'static,

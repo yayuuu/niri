@@ -19,9 +19,9 @@ use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::SizingMode;
 use crate::niri_render_elements;
-use crate::render_helpers::blur::{EffectsFramebuffersUserData, OverviewZoom};
 use crate::render_helpers::renderer::NiriRenderer;
-use crate::render_helpers::RenderTarget;
+use crate::render_helpers::xray::XrayPos;
+use crate::render_helpers::RenderCtx;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 use crate::utils::ResizeEdge;
 use crate::window::ResolvedWindowRules;
@@ -3488,21 +3488,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn render<R: NiriRenderer>(
         &self,
-        renderer: &mut R,
-        target: RenderTarget,
+        mut ctx: RenderCtx<R>,
+        xray_pos: XrayPos,
         focus_ring: bool,
         push: &mut dyn FnMut(ScrollingSpaceRenderElement<R>),
-        force_optimized_blur: bool,
-        fx_buffers: Option<EffectsFramebuffersUserData>,
-        overview_zoom: f64,
-        overview_zoom_offset: Option<Point<f64, Logical>>,
     ) {
         let scale = Scale::from(self.scale);
 
         // Draw the closing windows on top of the other windows.
         let view_rect = Rectangle::new(Point::from((self.view_pos(), 0.)), self.view_size);
         for closing in self.closing_windows.iter().rev() {
-            let elem = closing.render(renderer.as_gles_renderer(), view_rect, scale, target);
+            let elem = closing.render(ctx.as_gles(), view_rect, scale);
             push(elem.into());
         }
 
@@ -3530,21 +3526,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let focus_ring = focus_ring && first;
                 first = false;
 
-                tile.render(
-                    renderer,
-                    tile_pos,
-                    focus_ring,
-                    target,
-                    &mut |elem| push(elem.into()),
-                    force_optimized_blur,
-                    fx_buffers.clone(),
-                    OverviewZoom {
-                        zoom: Some(overview_zoom),
-                        center: None,
-                        offset: overview_zoom_offset,
-                        use_render_loc_center: false,
-                    },
-                );
+                let xray_pos = xray_pos.offset(tile_pos);
+                tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
+                    push(elem.into())
+                });
             }
         }
     }
@@ -5855,8 +5840,10 @@ mod tests {
     use niri_config::FloatOrInt;
     use smithay::output::Output;
     use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+    use smithay::utils::Transform;
 
     use super::*;
+    use crate::layout::{ConfigureIntent, LayoutElementRenderSnapshot};
     use crate::render_helpers::offscreen::OffscreenData;
     use crate::utils::round_logical_in_physical;
 
@@ -5986,6 +5973,28 @@ mod tests {
         }
 
         fn on_commit(&mut self, _serial: Serial) {}
+
+        fn set_active_in_column(&mut self, _active: bool) {}
+
+        fn set_floating(&mut self, _floating: bool) {}
+
+        fn is_floating(&self) -> bool {
+            false
+        }
+
+        fn is_ignoring_opacity_window_rule(&self) -> bool {
+            false
+        }
+
+        fn is_urgent(&self) -> bool {
+            false
+        }
+
+        fn configure_intent(&self) -> ConfigureIntent {
+            ConfigureIntent::NotNeeded
+        }
+
+        fn send_pending_configure(&mut self) {}
     }
 
     #[test]
@@ -6019,10 +6028,15 @@ mod tests {
 
     #[test]
     fn align_left_after_growth_respects_left_strut() {
-        let mut layout = niri_config::Layout::default();
-        layout.always_center_single_column = true;
-        layout.gaps = 8.;
-        layout.struts.left = FloatOrInt(100.);
+        let layout = niri_config::Layout {
+            always_center_single_column: true,
+            gaps: 8.,
+            struts: Struts {
+                left: FloatOrInt(100.),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         let options = Rc::new(Options {
             layout,

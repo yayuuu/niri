@@ -339,81 +339,6 @@ impl MergeWith<BorderRule> for FocusRing {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Blur {
-    pub on: bool,
-    pub passes: u32,
-    pub radius: FloatOrInt<0, 1024>,
-    pub noise: FloatOrInt<0, 1024>,
-    pub fps: FloatOrInt<0, 1000>,
-    pub true_blur_fps: FloatOrInt<1, 1000>,
-    pub optimized_blur_fps: FloatOrInt<0, 1000>,
-    pub animation_blur_fps: FloatOrInt<1, 1000>,
-    pub optimized: bool,
-    pub brightness: FloatOrInt<0, 2>,
-    pub contrast: FloatOrInt<0, 1024>,
-    pub saturation: FloatOrInt<0, 1024>,
-    pub ignore_alpha: FloatOrInt<0, 1>,
-    pub x_ray: bool,
-}
-
-impl Default for Blur {
-    fn default() -> Self {
-        Self {
-            on: false,
-            passes: 0,
-            radius: FloatOrInt(0.0),
-            noise: FloatOrInt(0.0),
-            fps: FloatOrInt(0.0),
-            true_blur_fps: FloatOrInt(6.666_666_5),
-            optimized_blur_fps: FloatOrInt(0.0),
-            animation_blur_fps: FloatOrInt(60.0),
-            optimized: true,
-            brightness: FloatOrInt(1.0),
-            contrast: FloatOrInt(1.0),
-            saturation: FloatOrInt(1.0),
-            ignore_alpha: FloatOrInt(0.0),
-            x_ray: false,
-        }
-    }
-}
-
-impl MergeWith<BlurRule> for Blur {
-    fn merge_with(&mut self, part: &BlurRule) {
-        self.on |= part.on;
-        if part.off {
-            self.on = false;
-        }
-
-        merge_clone!(
-            (self, part),
-            passes,
-            radius,
-            noise,
-            fps,
-            true_blur_fps,
-            optimized_blur_fps,
-            animation_blur_fps,
-            optimized,
-            brightness,
-            contrast,
-            saturation,
-            ignore_alpha,
-            x_ray
-        );
-
-        if let Some(fps) = part.fps {
-            if part.true_blur_fps.is_none() {
-                let fps_val = fps.0.max(1.0);
-                self.true_blur_fps = FloatOrInt(fps_val);
-            }
-            if part.optimized_blur_fps.is_none() {
-                self.optimized_blur_fps = fps;
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shadow {
     pub on: bool,
     pub offset: ShadowOffset,
@@ -722,40 +647,6 @@ pub struct BorderRule {
 }
 
 #[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
-pub struct BlurRule {
-    #[knuffel(child)]
-    pub off: bool,
-    #[knuffel(child)]
-    pub on: bool,
-    #[knuffel(child, unwrap(argument))]
-    pub passes: Option<u32>,
-    #[knuffel(child, unwrap(argument))]
-    pub radius: Option<FloatOrInt<0, 1024>>,
-    #[knuffel(child, unwrap(argument))]
-    pub noise: Option<FloatOrInt<0, 1024>>,
-    #[knuffel(child, unwrap(argument))]
-    pub fps: Option<FloatOrInt<0, 1000>>,
-    #[knuffel(child, unwrap(argument))]
-    pub true_blur_fps: Option<FloatOrInt<1, 1000>>,
-    #[knuffel(child, unwrap(argument))]
-    pub optimized_blur_fps: Option<FloatOrInt<0, 1000>>,
-    #[knuffel(child, unwrap(argument))]
-    pub animation_blur_fps: Option<FloatOrInt<1, 1000>>,
-    #[knuffel(child, unwrap(argument))]
-    pub optimized: Option<bool>,
-    #[knuffel(child, unwrap(argument))]
-    pub brightness: Option<FloatOrInt<0, 2>>,
-    #[knuffel(child, unwrap(argument))]
-    pub contrast: Option<FloatOrInt<0, 1024>>,
-    #[knuffel(child, unwrap(argument))]
-    pub saturation: Option<FloatOrInt<0, 1024>>,
-    #[knuffel(child, unwrap(argument))]
-    pub ignore_alpha: Option<FloatOrInt<0, 1>>,
-    #[knuffel(child, unwrap(argument))]
-    pub x_ray: Option<bool>,
-}
-
-#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
 pub struct ShadowRule {
     #[knuffel(child)]
     pub off: bool,
@@ -789,6 +680,10 @@ pub struct TabIndicatorRule {
     pub inactive_gradient: Option<Gradient>,
     #[knuffel(child)]
     pub urgent_gradient: Option<Gradient>,
+    #[knuffel(child, unwrap(argument))]
+    pub hide_titles: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub title_font_size: Option<FloatOrInt<0, 65535>>,
 }
 
 impl MergeWith<Self> for BorderRule {
@@ -802,25 +697,6 @@ impl MergeWith<Self> for BorderRule {
             (active_color, active_gradient),
             (inactive_color, inactive_gradient),
             (urgent_color, urgent_gradient),
-        );
-    }
-}
-
-impl MergeWith<Self> for BlurRule {
-    fn merge_with(&mut self, part: &Self) {
-        merge_on_off!((self, part));
-
-        merge_clone_opt!(
-            (self, part),
-            passes,
-            radius,
-            noise,
-            optimized,
-            brightness,
-            contrast,
-            saturation,
-            ignore_alpha,
-            x_ray
         );
     }
 }
@@ -843,6 +719,8 @@ impl MergeWith<Self> for ShadowRule {
 
 impl MergeWith<Self> for TabIndicatorRule {
     fn merge_with(&mut self, part: &Self) {
+        merge_clone_opt!((self, part), hide_titles, title_font_size);
+
         merge_color_gradient_opt!(
             (self, part),
             (active_color, active_gradient),
@@ -1133,6 +1011,103 @@ where
         }
 
         Ok(rv)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Blur {
+    pub off: bool,
+    pub passes: u8,
+    pub offset: f64,
+    pub noise: f64,
+    pub saturation: f64,
+}
+
+impl Default for Blur {
+    fn default() -> Self {
+        Self {
+            off: false,
+            passes: 3,
+            offset: 3.,
+            noise: 0.02,
+            saturation: 1.5,
+        }
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
+pub struct BlurPart {
+    #[knuffel(child)]
+    pub off: bool,
+    #[knuffel(child)]
+    pub on: bool,
+    #[knuffel(child, unwrap(argument))]
+    pub passes: Option<u8>,
+    #[knuffel(child, unwrap(argument))]
+    pub offset: Option<FloatOrInt<0, 100>>,
+    #[knuffel(child, unwrap(argument))]
+    pub noise: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub saturation: Option<FloatOrInt<0, 1000>>,
+}
+
+impl MergeWith<BlurPart> for Blur {
+    fn merge_with(&mut self, part: &BlurPart) {
+        self.off |= part.off;
+        if part.on {
+            self.off = false;
+        }
+
+        merge_clone!((self, part), passes);
+        merge!((self, part), offset, noise, saturation);
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
+pub struct BackgroundEffectRule {
+    #[knuffel(child, unwrap(argument))]
+    pub xray: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub blur: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub noise: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub saturation: Option<FloatOrInt<0, 1000>>,
+}
+
+/// Resolved background effect rule.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct BackgroundEffect {
+    /// Whether to render with xray effect (see through).
+    ///
+    /// - `None`: xray if any background effect is active
+    /// - `Some(false)`: no xray
+    /// - `Some(true)`: xray even if no other background effect is active
+    pub xray: Option<bool>,
+
+    /// Whether to blur the background.
+    ///
+    /// - `None`: blur when the window/layer requests it (e.g. through ext-background-effect
+    ///   protocol)
+    /// - `Some(false)`: never blur
+    /// - `Some(true)`: always blur
+    pub blur: Option<bool>,
+
+    pub noise: Option<f64>,
+    pub saturation: Option<f64>,
+}
+
+impl MergeWith<BackgroundEffectRule> for BackgroundEffect {
+    fn merge_with(&mut self, part: &BackgroundEffectRule) {
+        merge_clone_opt!((self, part), xray, blur);
+
+        if let Some(x) = part.noise {
+            self.noise = Some(x.0);
+        }
+
+        if let Some(x) = part.saturation {
+            self.saturation = Some(x.0);
+        }
     }
 }
 

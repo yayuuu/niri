@@ -16,39 +16,41 @@
     };
   };
 
-  outputs = {
-    self,
-    nixpkgs,
-    treefmt-nix,
-    fenix,
-    crane,
-    advisory-db,
-  }: let
-    niri-package = {
-      lib,
-      cairo,
-      dbus,
-      libGL,
-      libdisplay-info,
-      libinput,
-      seatd,
-      libxkbcommon,
-      libgbm,
-      pango,
-      pipewire,
-      pkg-config,
-      rustPlatform,
-      systemd,
-      wayland,
-      installShellFiles,
-      withDbus ? true,
-      withSystemd ? true,
-      withScreencastSupport ? true,
-      withDinit ? false,
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
     }:
-      rustPlatform.buildRustPackage {
-        pname = "niri";
-        version = self.shortRev or self.dirtyShortRev or "unknown";
+    let
+      revision = self.shortRev or self.dirtyShortRev or "unknown";
+      niri-package =
+        {
+          lib,
+          cairo,
+          dbus,
+          libGL,
+          libdisplay-info,
+          libinput,
+          seatd,
+          libxkbcommon,
+          libgbm,
+          pango,
+          pipewire,
+          pkg-config,
+          rustPlatform,
+          systemd,
+          wayland,
+          installShellFiles,
+          withDbus ? true,
+          withSystemd ? true,
+          withScreencastSupport ? true,
+          withDinit ? false,
+        }:
+
+        rustPlatform.buildRustPackage {
+          pname = "niri";
+          version = revision;
 
         src = lib.fileset.toSource {
           root = ./.;
@@ -108,14 +110,14 @@
           ++ lib.optional withSystemd "systemd";
         buildNoDefaultFeatures = true;
 
-        # ever since this commit:
-        # https://github.com/YaLTeR/niri/commit/771ea1e81557ffe7af9cbdbec161601575b64d81
-        # niri now runs an actual instance of the real compositor (with a mock backend) during tests
-        # and thus creates a real socket file in the runtime dir.
-        # this is fine for our build, we just need to make sure it has a directory to write to.
-        preCheck = ''
-          export XDG_RUNTIME_DIR="$(mktemp -d)"
-        '';
+          # ever since this commit:
+          # https://github.com/niri-wm/niri/commit/771ea1e81557ffe7af9cbdbec161601575b64d81
+          # niri now runs an actual instance of the real compositor (with a mock backend) during tests
+          # and thus creates a real socket file in the runtime dir.
+          # this is fine for our build, we just need to make sure it has a directory to write to.
+          preCheck = ''
+            export XDG_RUNTIME_DIR="$(mktemp -d)"
+          '';
 
         checkFlags = [
           # These tests require the ability to access a "valid EGL Display", but that won't work
@@ -150,121 +152,72 @@
                 "-Wl,--pop-state"
               ]
             );
-            NIRI_BUILD_COMMIT = self.shortRev;
+            NIRI_BUILD_COMMIT = revision;
           };
 
         passthru = {
           providedSessions = ["niri"];
         };
 
-        meta = {
-          description = "Scrollable-tiling Wayland compositor";
-          homepage = "https://github.com/YaLTeR/niri";
-          license = lib.licenses.gpl3Only;
-          mainProgram = "niri";
-          platforms = lib.platforms.linux;
-        };
-      };
-    supportedSystems = [
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
-    inherit (nixpkgs) lib;
-
-    forEachSupportedSystem = f:
-      lib.genAttrs supportedSystems (
-        system: let
-          pkgs = import nixpkgs {
-            inherit system;
-            overlays = [
-              self.overlays.default
-            ];
+          meta = {
+            description = "Scrollable-tiling Wayland compositor";
+            homepage = "https://github.com/niri-wm/niri";
+            license = lib.licenses.gpl3Only;
+            mainProgram = "niri";
+            platforms = lib.platforms.linux;
           };
+        };
 
-          ourPackages = lib.filterAttrs (_: v: (v ? niriPackage)) pkgs.niriPackages;
+      inherit (nixpkgs) lib;
+      # Support all Linux systems that the nixpkgs flake exposes
+      systems = lib.intersectLists lib.systems.flakeExposed lib.platforms.linux;
 
-          treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
+      forAllSystems = lib.genAttrs systems;
+      nixpkgsFor = forAllSystems (system: nixpkgs.legacyPackages.${system});
+    in
+    {
+      checks = forAllSystems (system: {
+        # We use the debug build here to save a bit of time
+        inherit (self.packages.${system}) niri-debug;
+      });
 
-          treefmt = treefmtEval.config.build.wrapper;
+      devShells = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgsFor.${system};
+          rust-bin = rust-overlay.lib.mkRustBin { } pkgs;
+          inherit (self.packages.${system}) niri;
         in
-          f {
-            inherit
-              crane
-              fenix
-              ourPackages
-              pkgs
-              system
-              treefmt
-              treefmtEval
-              ;
-          }
-      );
-  in {
-    formatter = forEachSupportedSystem ({treefmt, ...}: treefmt);
+        {
+          default = pkgs.mkShell {
+            packages = [
+              # We don't use the toolchain from nixpkgs
+              # because we prefer a nightly toolchain
+              # and we *require* a nightly rustfmt
+              (rust-bin.selectLatestNightlyWith (
+                toolchain:
+                toolchain.default.override {
+                  extensions = [
+                    # includes already:
+                    # rustc
+                    # cargo
+                    # rust-std
+                    # rust-docs
+                    # rustfmt-preview
+                    # clippy-preview
+                    "rust-analyzer"
+                    "rust-src"
+                  ];
+                }
+              ))
+              pkgs.cargo-insta
+            ];
 
-    checks = forEachSupportedSystem (
-      {
-        pkgs,
-        treefmtEval,
-        ourPackages,
-        ...
-      }: let
-        testsFrom = pkg:
-          pkgs.lib.mapAttrs' (name: value: {
-            name = "${pkg.pname}-${name}";
-            inherit value;
-          }) (pkg.passthru.tests or {});
-
-        ourTests =
-          pkgs.lib.foldlAttrs (
-            acc: name: value:
-              acc // (testsFrom value)
-          ) {}
-          ourPackages;
-      in
-        ourTests
-        // {
-          treefmt = treefmtEval.config.build.check self;
-        }
-    );
-
-    devShells = forEachSupportedSystem (
-      {
-        pkgs,
-        ourPackages,
-        treefmt,
-        ...
-      }: let
-        ourBuildInputs = lib.unique (
-          lib.foldlAttrs (
-            acc: _: v:
-              acc ++ (v.buildInputs or []) ++ (v.nativeBuildInputs or [])
-          ) []
-          ourPackages
-        );
-      in {
-        default = pkgs.mkShell {
-          inputsFrom = builtins.attrValues ourPackages;
-
-          packages = let
-            perf = pkgs.perf.override {
-              binutils-unwrapped = pkgs.llvmPackages.bintools-unwrapped;
-            };
-
-            cargo-flamegraph = pkgs.cargo-flamegraph.override {
-              inherit perf;
-            };
-          in [
-            pkgs.cargo-insta
-            pkgs.flamegraph
-            pkgs.pkg-config
-            pkgs.rustPlatform.bindgenHook
-            pkgs.wrapGAppsHook4 # For `niri-visual-tests`
-
-            cargo-flamegraph
-            perf
-            treefmt
-          ];
+            nativeBuildInputs = [
+              pkgs.rustPlatform.bindgenHook
+              pkgs.pkg-config
+              pkgs.wrapGAppsHook4 # For `niri-visual-tests`
+            ];
 
           buildInputs = [
             pkgs.libadwaita # For `niri-visual-tests`

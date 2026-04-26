@@ -177,6 +177,7 @@ layout {
 ### `preset-column-widths`
 
 Set the widths that the `switch-preset-column-width` action (Mod+R) toggles between.
+<sup>Since: 25.08</sup> You can use the `switch-preset-column-width-back` action (Mod+Shift+R) to toggle in reverse.
 
 `proportion` sets the width as a fraction of the output width, taking gaps into account.
 For example, you can perfectly fit four windows sized `proportion 0.25` on an output, regardless of the gaps setting.
@@ -228,7 +229,8 @@ layout {
 
 <sup>Since: 0.1.9</sup>
 
-Set the heights that the `switch-preset-window-height` action (Mod+Shift+R) toggles between.
+Set the heights that the `switch-preset-window-height` action (Mod+Ctrl+Shift+R) toggles between.
+<sup>Since: 25.08</sup> You can use the `switch-preset-window-height-back` action (not bound by default) to toggle in reverse.
 
 `proportion` sets the height as a fraction of the output height, taking gaps into account.
 The default preset heights are <sup>1</sup>&frasl;<sub>3</sub>, <sup>1</sup>&frasl;<sub>2</sub> and <sup>2</sup>&frasl;<sub>3</sub> of the output.
@@ -373,37 +375,6 @@ For example, `active-gradient from="#f00f" to="#0f05" angle=45 in="oklch longer 
 layout {
     border {
         active-gradient from="#f00f" to="#0f05" angle=45 in="oklch longer hue"
-    }
-}
-```
-
-### `blur`
-
-Blur behind windows that request it.
-Enable it with `on` and adjust the blur strength with `passes`, `radius` and `noise`.
-
-`optimized` is `true` by default and uses a shared blur texture for tiled windows (floating windows already render blur in real time).
-Set `optimized false` to force real-time blur for every window that uses this blur config, or override it per-window with a [`window-rule`](./Configuration:-Window-Rules.md).
-
-`true-blur-fps` caps how often *true* blur (non-optimized) is re-rendered. Minimum is 1 FPS.
-`optimized-blur-fps` caps how often the optimized blur texture is refreshed. Set it to `0` to disable periodic refreshes.
-`animation-blur-fps` caps optimized blur refresh during overview/workspace switch animations.
-`fps` is a shared fallback for `true_blur_fps` and `optimized_blur_fps` (but not for `animation-blur_fps`).
-If you don't set `true-blur-fps` or `optimized-blur-fps`, the value from `fps` is used instead.
-The default matches the previous 150 ms timer (~6.7 fps).
-
-```kdl
-layout {
-    blur {
-        on
-        passes 2
-        radius 5
-        noise 0.1
-        optimized false
-        fps 30
-        true-blur-fps 15
-        optimized-blur-fps 0
-        animation-blur-fps 60
     }
 }
 ```

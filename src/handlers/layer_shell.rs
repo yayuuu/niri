@@ -1,18 +1,16 @@
 use smithay::delegate_layer_shell;
 use smithay::desktop::{layer_map_for_output, LayerSurface, PopupKind, WindowSurfaceType};
-use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::wayland::compositor::{get_parent, with_states};
+use smithay::wayland::compositor::{add_pre_commit_hook, get_parent, with_states, HookId};
 use smithay::wayland::shell::wlr_layer::{
-    self, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceData, WlrLayerShellHandler,
-    WlrLayerShellState,
+    self, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceCachedState, LayerSurfaceData,
+    WlrLayerShellHandler, WlrLayerShellState,
 };
 use smithay::wayland::shell::xdg::PopupSurface;
 
 use crate::layer::{MappedLayer, ResolvedLayerRules};
 use crate::niri::State;
-use crate::render_helpers::blur::EffectsFramebuffers;
 use crate::utils::{is_mapped, output_size, send_scale_transform};
 
 impl WlrLayerShellHandler for State {
@@ -24,11 +22,11 @@ impl WlrLayerShellHandler for State {
         &mut self,
         surface: WlrLayerSurface,
         wl_output: Option<WlOutput>,
-        wlr_layer: Layer,
+        _layer: Layer,
         namespace: String,
     ) {
         let output = if let Some(wl_output) = &wl_output {
-            Output::from_resource(wl_output)
+            self.niri.output_from_resource(wl_output)
         } else {
             self.niri.layout.active_output().cloned()
         };
@@ -37,10 +35,6 @@ impl WlrLayerShellHandler for State {
             surface.send_close();
             return;
         };
-
-        if matches!(wlr_layer, Layer::Background | Layer::Bottom) {
-            EffectsFramebuffers::set_dirty(&output);
-        }
 
         let wl_surface = surface.wl_surface().clone();
         let is_new = self.niri.unmapped_layer_surfaces.insert(wl_surface);
@@ -64,10 +58,6 @@ impl WlrLayerShellHandler for State {
                     .cloned();
                 layer.map(|layer| (o.clone(), map, layer))
             }) {
-            if matches!(layer.layer(), Layer::Background | Layer::Bottom) {
-                EffectsFramebuffers::set_dirty(&output);
-            }
-
             map.unmap_layer(&layer);
             self.niri.mapped_layer_surfaces.remove(&layer);
             Some(output)
@@ -122,10 +112,6 @@ impl State {
             .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
             .unwrap();
 
-        if matches!(layer.layer(), Layer::Bottom | Layer::Background) {
-            EffectsFramebuffers::set_dirty(&output);
-        }
-
         if is_mapped(surface) {
             let was_unmapped = self.niri.unmapped_layer_surfaces.remove(surface);
 
@@ -139,8 +125,10 @@ impl State {
                 let output_size = output_size(&output);
                 let scale = output.current_scale().fractional_scale();
 
+                let hook = add_mapped_layer_pre_commit_hook(layer);
                 let mapped = MappedLayer::new(
                     layer.clone(),
+                    hook,
                     rules,
                     output_size,
                     scale,
@@ -155,6 +143,21 @@ impl State {
                 if prev.is_some() {
                     error!("MappedLayer was present for an unmapped surface");
                 }
+            } else {
+                // The surface remains mapped.
+                if let Some(mapped) = self.niri.mapped_layer_surfaces.get_mut(layer) {
+                    // Check if the layer changed.
+                    if mapped.take_recompute_rules_on_commit() {
+                        let config = self.niri.config.borrow();
+                        if mapped
+                            .recompute_layer_rules(&config.layer_rules, self.niri.is_at_startup)
+                        {
+                            mapped.update_config(&config);
+                        }
+                    }
+                } else {
+                    error!("MappedLayer missing for a mapped surface");
+                }
             }
 
             // Give focus to newly mapped on-demand surfaces. Some launchers like lxqt-runner rely
@@ -168,7 +171,7 @@ impl State {
             // 2) Same-layer exclusive layer surfaces are already preferred to on-demand surfaces in
             //    update_keyboard_focus(), so we don't need to check for that here.
             //
-            // https://github.com/YaLTeR/niri/issues/641
+            // https://github.com/niri-wm/niri/issues/641
             let on_demand = layer.cached_state().keyboard_interactivity
                 == wlr_layer::KeyboardInteractivity::OnDemand;
             if was_unmapped && on_demand {
@@ -216,4 +219,24 @@ impl State {
 
         true
     }
+}
+
+fn add_mapped_layer_pre_commit_hook(layer: &LayerSurface) -> HookId {
+    add_pre_commit_hook::<State, _>(layer.wl_surface(), move |state, _dh, surface| {
+        let layer_changed = with_states(surface, |states| {
+            let mut guard = states.cached_state.get::<LayerSurfaceCachedState>();
+            let pending_layer = guard.pending().layer;
+            let current_layer = guard.current().layer;
+            pending_layer != current_layer
+        });
+
+        if layer_changed {
+            for mapped in state.niri.mapped_layer_surfaces.values_mut() {
+                if mapped.surface().wl_surface() == surface {
+                    mapped.set_recompute_rules_on_commit();
+                    break;
+                }
+            }
+        }
+    })
 }

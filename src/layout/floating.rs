@@ -17,9 +17,9 @@ use super::{
 };
 use crate::animation::{Animation, Clock};
 use crate::niri_render_elements;
-use crate::render_helpers::blur::{EffectsFramebuffersUserData, OverviewZoom};
 use crate::render_helpers::renderer::NiriRenderer;
-use crate::render_helpers::RenderTarget;
+use crate::render_helpers::xray::XrayPos;
+use crate::render_helpers::RenderCtx;
 use crate::utils::transaction::TransactionBlocker;
 use crate::utils::{
     center_preferring_top_left_in_area, clamp_preferring_top_left_in_area, ensure_min_max_size,
@@ -559,6 +559,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         // Now, descendants is in back-to-front order, and repositioning them in the front-to-back
         // order will preserve the subsequent indices and work out right.
         let mut idx = idx;
+        #[allow(clippy::explicit_counter_loop)]
         for descendant_idx in descendants.into_iter().rev() {
             self.raise_window(descendant_idx, idx);
             idx += 1;
@@ -1137,16 +1138,12 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
     pub fn render<R: NiriRenderer>(
         &self,
-        renderer: &mut R,
+        mut ctx: RenderCtx<R>,
+        xray_pos: XrayPos,
         view_rect: Rectangle<f64, Logical>,
-        target: RenderTarget,
         focus_ring: bool,
 
         push: &mut dyn FnMut(FloatingSpaceRenderElement<R>),
-        force_optimized_blur: bool,
-        fx_buffers: Option<EffectsFramebuffersUserData>,
-        overview_zoom: f64,
-        overview_zoom_offset: Option<Point<f64, Logical>>,
     ) {
         let scale = Scale::from(self.scale);
 
@@ -1154,7 +1151,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         //
         // FIXME: I guess this should rather preserve the stacking order when the window is closed.
         for closing in self.closing_windows.iter().rev() {
-            let elem = closing.render(renderer.as_gles_renderer(), view_rect, scale, target);
+            let elem = closing.render(ctx.as_gles(), view_rect, scale);
             push(elem.into());
         }
 
@@ -1163,21 +1160,10 @@ impl<W: LayoutElement> FloatingSpace<W> {
             // For the active tile, draw the focus ring.
             let focus_ring = focus_ring && Some(tile.focused_window().id()) == active.as_ref();
 
-            tile.render(
-                renderer,
-                tile_pos,
-                focus_ring,
-                target,
-                &mut |elem| push(elem.into()),
-                force_optimized_blur,
-                fx_buffers.clone(),
-                OverviewZoom {
-                    zoom: Some(overview_zoom),
-                    center: None,
-                    offset: overview_zoom_offset,
-                    use_render_loc_center: false,
-                },
-            );
+            let xray_pos = xray_pos.offset(tile_pos);
+            tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
+                push(elem.into())
+            });
         }
     }
 

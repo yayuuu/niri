@@ -1,12 +1,14 @@
 use std::cell::{Cell, Ref, RefCell};
+use std::sync::Arc;
 use std::time::Duration;
 
-use niri_config::{Color, CornerRadius, GradientInterpolation, WindowRule};
+use niri_config::{Color, Config, CornerRadius, GradientInterpolation, WindowRule};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
 use smithay::desktop::space::SpaceElement as _;
-use smithay::desktop::{PopupManager, Window};
+use smithay::desktop::{PopupKind, PopupManager, Window};
 use smithay::output::{self, Output};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -22,12 +24,14 @@ use smithay::wayland::shell::xdg::{
 use wayland_backend::server::Credentials;
 
 use super::{ResolvedWindowRules, WindowRef};
+use crate::handlers::background_effect::get_cached_blur_region;
 use crate::handlers::KdeDecorationsModeState;
 use crate::layout::{
     ConfigureIntent, InteractiveResizeData, LayoutElement, LayoutElementRenderElement,
     LayoutElementRenderSnapshot, SizingMode,
 };
 use crate::niri_render_elements;
+use crate::render_helpers::background_effect::BackgroundEffectElement;
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::offscreen::OffscreenData;
 use crate::render_helpers::renderer::NiriRenderer;
@@ -36,7 +40,8 @@ use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderEleme
 use crate::render_helpers::surface::{
     push_elements_from_surface_tree, render_snapshot_from_surface_tree,
 };
-use crate::render_helpers::{BakedBuffer, RenderTarget};
+use crate::render_helpers::xray::XrayPos;
+use crate::render_helpers::{background_effect, BakedBuffer, RenderCtx, RenderTarget};
 use crate::utils::id::IdCounter;
 use crate::utils::transaction::Transaction;
 use crate::utils::{
@@ -103,6 +108,9 @@ pub struct Mapped {
 
     /// Buffer to draw instead of the window when it should be blocked out.
     block_out_buffer: RefCell<SolidColorBuffer>,
+
+    /// The blur config, passed for background effect rendering.
+    blur_config: niri_config::Blur,
 
     /// Whether the next configure should be animated, if the configured state changed.
     animate_next_configure: bool,
@@ -188,9 +196,6 @@ pub struct Mapped {
 
     /// Most recent monotonic time when the window had the focus.
     focus_timestamp: Option<Duration>,
-
-    /// Whether this window wants blur as specified by any of the wayland protocols.
-    proto_wants_blur: bool,
 }
 
 niri_render_elements! {
@@ -213,6 +218,24 @@ impl MappedId {
 
     pub fn get(self) -> u64 {
         self.0
+    }
+
+    /// Converts the ID to a string that can be used as an identifier in
+    /// ext_foreign_toplevel_handle_v1::identifier
+    ///
+    /// > An identifier is a string that contains up to 32 printable ASCII bytes.
+    /// > An identifier must not be an empty string.
+    ///
+    /// Since the ID is exposed to IPC, it's useful for this conversion to be stable and reversible.
+    /// That way, clients can associate a foreign toplevel handle with an IPC window ID.
+    ///
+    /// We use the decimal representation of the ID, which is up to 20 characters long for u64::MAX.
+    /// This is within the 32-character limit, and is nice because it matches up with how `niri msg`
+    /// prints the IDs to the console.
+    ///
+    /// This namespace can be extended in the future, with any non-numeric prefix to disambiguate.
+    pub fn to_protocol_identifier(self) -> String {
+        format!("{}", self.0)
     }
 }
 
@@ -252,10 +275,9 @@ enum RequestSizeOnce {
 }
 
 impl Mapped {
-    pub fn new(window: Window, rules: ResolvedWindowRules, hook: HookId) -> Self {
+    pub fn new(window: Window, rules: ResolvedWindowRules, hook: HookId, config: &Config) -> Self {
         let surface = window.wl_surface().expect("no X11 support");
         let credentials = get_credentials_for_surface(&surface);
-
         let mut rv = Self {
             window,
             id: MappedId::next(),
@@ -273,6 +295,7 @@ impl Mapped {
             is_window_cast_target: false,
             ignore_opacity_window_rule: false,
             block_out_buffer: RefCell::new(SolidColorBuffer::new((0., 0.), [0., 0., 0., 1.])),
+            blur_config: config.blur,
             animate_next_configure: false,
             animate_serials: Vec::new(),
             animation_snapshot: None,
@@ -288,7 +311,6 @@ impl Mapped {
             is_pending_maximized: false,
             uncommitted_maximized: Vec::new(),
             focus_timestamp: None,
-            proto_wants_blur: false,
         };
 
         rv.is_maximized = rv.sizing_mode().is_maximized();
@@ -411,10 +433,12 @@ impl Mapped {
 
         RenderSnapshot {
             contents,
+            contents_with_blocked_out_bg: None,
             blocked_out_contents,
             block_out_from: self.rules().block_out_from,
             size,
             texture: Default::default(),
+            texture_with_blocked_out_bg: Default::default(),
             blocked_out_texture: Default::default(),
         }
     }
@@ -483,8 +507,7 @@ impl Mapped {
         let bbox = self.window.bbox_with_popups().to_physical_precise_up(scale);
 
         let has_border_shader = BorderRenderElement::has_shader(renderer);
-        let rules = self.rules();
-        let radius = rules.geometry_corner_radius.unwrap_or_default();
+        let radius = self.geometry_corner_radius();
         let window_size = self
             .size()
             .to_f64()
@@ -524,11 +547,15 @@ impl Mapped {
         };
 
         self.render(
-            renderer,
+            RenderCtx {
+                renderer,
+                target: RenderTarget::Screencast,
+                xray: None,
+            },
             location,
             scale,
             1.,
-            RenderTarget::Screencast,
+            XrayPos::default(),
             &mut |elem| push(use_border(elem)),
         );
     }
@@ -591,7 +618,7 @@ impl Mapped {
 
 impl Drop for Mapped {
     fn drop(&mut self) {
-        remove_pre_commit_hook(self.toplevel().wl_surface(), self.pre_commit_hook.clone());
+        remove_pre_commit_hook(self.toplevel().wl_surface(), &self.pre_commit_hook);
     }
 }
 
@@ -600,6 +627,10 @@ impl LayoutElement for Mapped {
 
     fn id(&self) -> &Self::Id {
         &self.window
+    }
+
+    fn update_config(&mut self, blur_config: niri_config::Blur) {
+        self.blur_config = blur_config;
     }
 
     fn size(&self) -> Size<i32, Logical> {
@@ -617,14 +648,13 @@ impl LayoutElement for Mapped {
 
     fn render_normal<R: NiriRenderer>(
         &self,
-        renderer: &mut R,
+        ctx: RenderCtx<R>,
         location: Point<f64, Logical>,
         scale: Scale<f64>,
         alpha: f32,
-        target: RenderTarget,
         push: &mut dyn FnMut(LayoutElementRenderElement<R>),
     ) {
-        if target.should_block_out(self.rules.block_out_from) {
+        if ctx.target.should_block_out(self.rules.block_out_from) {
             let mut buffer = self.block_out_buffer.borrow_mut();
             buffer.resize(self.window.geometry().size.to_f64());
             let elem =
@@ -635,7 +665,7 @@ impl LayoutElement for Mapped {
             let surface = self.toplevel().wl_surface();
             let mut push = |elem: WaylandSurfaceRenderElement<R>| push(elem.into());
             push_elements_from_surface_tree(
-                renderer,
+                ctx.renderer,
                 surface,
                 buf_pos.to_physical_precise_round(scale),
                 scale,
@@ -648,33 +678,96 @@ impl LayoutElement for Mapped {
 
     fn render_popups<R: NiriRenderer>(
         &self,
-        renderer: &mut R,
+        mut ctx: RenderCtx<R>,
         location: Point<f64, Logical>,
         scale: Scale<f64>,
         alpha: f32,
-        target: RenderTarget,
+        xray_pos: XrayPos,
         push: &mut dyn FnMut(LayoutElementRenderElement<R>),
     ) {
-        if target.should_block_out(self.rules.block_out_from) {
+        if ctx.target.should_block_out(self.rules.block_out_from) {
             return;
         }
 
-        let buf_pos = location - self.window.geometry().loc.to_f64();
         let surface = self.toplevel().wl_surface();
-        let mut push = |elem: WaylandSurfaceRenderElement<R>| push(elem.into());
-        for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
-            let offset = self.window.geometry().loc + popup_offset - popup.geometry().loc;
+        for (popup, offset) in PopupManager::popups_for_surface(surface) {
+            let popup_rules = match popup {
+                PopupKind::Xdg(_) => self.rules.popups,
+                // IME popups aren't affected by rules for regular popups.
+                PopupKind::InputMethod(_) => niri_config::ResolvedPopupsRules::default(),
+            };
+            let alpha = alpha * popup_rules.opacity.unwrap_or(1.).clamp(0., 1.);
+
+            let surface = popup.wl_surface();
+            let popup_geo = popup.geometry();
+            let surface_loc = location + (offset - popup.geometry().loc).to_f64();
 
             push_elements_from_surface_tree(
-                renderer,
-                popup.wl_surface(),
-                (buf_pos + offset.to_f64()).to_physical_precise_round(scale),
+                ctx.renderer,
+                surface,
+                surface_loc.to_physical_precise_round(scale),
                 scale,
                 alpha,
                 Kind::ScanoutCandidate,
-                &mut push,
+                &mut |elem| push(elem.into()),
+            );
+
+            let geometry = Rectangle::new(location + offset.to_f64(), popup_geo.size.to_f64());
+            let surface_off = popup_geo.loc.upscale(-1).to_f64();
+            let surface_anim_scale = Scale::from(1.);
+            let mut effect = popup_rules.background_effect;
+            // Default xray to false for pop-ups since they're always on top of something.
+            if effect.xray.is_none() {
+                effect.xray = Some(false);
+            }
+            let xray_pos = xray_pos.offset(offset.to_f64());
+            background_effect::render_for_tile(
+                ctx.as_gles(),
+                None,
+                geometry,
+                scale.x,
+                false,
+                surface,
+                surface_off,
+                surface_anim_scale,
+                self.blur_config,
+                popup_rules.geometry_corner_radius.unwrap_or_default(),
+                effect,
+                false,
+                xray_pos,
+                &mut |elem| push(elem.into()),
             );
         }
+    }
+
+    fn render_background_effect(
+        &self,
+        ctx: RenderCtx<GlesRenderer>,
+        geometry: Rectangle<f64, Logical>,
+        scale: f64,
+        clip_to_geometry: bool,
+        surface_anim_scale: Scale<f64>,
+        radius: CornerRadius,
+        xray_pos: XrayPos,
+        push: &mut dyn FnMut(BackgroundEffectElement),
+    ) {
+        let should_block_out = ctx.target.should_block_out(self.rules.block_out_from);
+        background_effect::render_for_tile(
+            ctx,
+            None,
+            geometry,
+            scale,
+            clip_to_geometry,
+            self.toplevel().wl_surface(),
+            self.buf_loc().to_f64(),
+            surface_anim_scale,
+            self.blur_config,
+            radius,
+            self.rules.background_effect,
+            should_block_out,
+            xray_pos,
+            push,
+        );
     }
 
     fn request_size(
@@ -913,6 +1006,10 @@ impl LayoutElement for Mapped {
 
     fn is_floating(&self) -> bool {
         self.is_floating
+    }
+
+    fn title(&self) -> Option<String> {
+        with_toplevel_role(self.toplevel(), |role| role.title.clone())
     }
 
     fn set_bounds(&self, bounds: Size<i32, Logical>) {
@@ -1224,6 +1321,10 @@ impl LayoutElement for Mapped {
         }
     }
 
+    fn is_windowed_fullscreen(&self) -> bool {
+        self.is_windowed_fullscreen
+    }
+
     fn is_pending_windowed_fullscreen(&self) -> bool {
         self.is_pending_windowed_fullscreen
     }
@@ -1302,6 +1403,30 @@ impl LayoutElement for Mapped {
         Some(self.interactive_resize.as_ref()?.data())
     }
 
+    fn main_surface_geo(&self) -> Rectangle<i32, Logical> {
+        with_states(self.toplevel().wl_surface(), |states| {
+            let geo_loc = states
+                .cached_state
+                .get::<SurfaceCachedState>()
+                .current()
+                .geometry
+                .unwrap_or_default()
+                .loc;
+
+            let data = states.data_map.get::<RendererSurfaceStateUserData>();
+            data.and_then(|d| d.lock().unwrap().view())
+                .map(|view| Rectangle {
+                    loc: view.offset - geo_loc,
+                    size: view.dst,
+                })
+        })
+        .unwrap_or_default()
+    }
+
+    fn blur_region(&self) -> Option<Arc<Vec<Rectangle<i32, Logical>>>> {
+        with_states(self.toplevel().wl_surface(), get_cached_blur_region)
+    }
+
     fn on_commit(&mut self, commit_serial: Serial) {
         if let Some(InteractiveResize::WaitingForLastCommit { serial, .. }) =
             &self.interactive_resize
@@ -1337,18 +1462,5 @@ impl LayoutElement for Mapped {
                 true
             }
         });
-    }
-
-    fn title(&self) -> Option<String> {
-        with_toplevel_role(self.toplevel(), |role| role.title.clone())
-    }
-    ///
-    /// Set the preferred blurred state of this window.
-    fn set_proto_wants_blur(&mut self, new_blurred: bool) {
-        self.proto_wants_blur = new_blurred;
-    }
-
-    fn wants_blur(&self) -> bool {
-        !self.rules.blur.off && (self.rules.blur.on || self.proto_wants_blur)
     }
 }

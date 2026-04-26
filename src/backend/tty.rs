@@ -58,17 +58,17 @@ use smithay::wayland::drm_lease::{
 };
 use smithay::wayland::presentation::Refresh;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
+use wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
 use wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 
 use super::{IpcOutputMap, RenderResult};
 use crate::backend::OutputId;
 use crate::frame_clock::FrameClock;
 use crate::niri::{Niri, RedrawState, State};
-use crate::render_helpers::blur::EffectsFramebuffers;
 use crate::render_helpers::debug::draw_damage;
 use crate::render_helpers::render_data::RendererData;
 use crate::render_helpers::renderer::AsGlesRenderer;
-use crate::render_helpers::{resources, shaders, RenderTarget};
+use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, is_laptop_panel, logical_output, PanelOrientation};
 
 const SUPPORTED_COLOR_FORMATS: [Fourcc; 4] = [
@@ -98,9 +98,6 @@ pub struct Tty {
     dmabuf_global: Option<DmabufGlobal>,
     // The output config had changed, but the session is paused, so we need to update it on resume.
     update_output_config_on_resume: bool,
-    // The ignored nodes have changed, but the session is paused, so we need to update it on
-    // resume.
-    update_ignored_nodes_on_resume: bool,
     // Whether the debug tinting is enabled.
     debug_tint: bool,
     ipc_outputs: Arc<Mutex<IpcOutputMap>>,
@@ -460,6 +457,14 @@ impl Tty {
         }
         .map_err(|()| anyhow!("error assigning the seat to libinput"))?;
 
+        // If the session is not active at startup (e.g. niri was launched from a different TTY),
+        // suspend libinput now so that when ActivateSession fires, libinput.resume() performs a
+        // full re-enumeration of input devices instead of being a no-op.
+        if !session.is_active() {
+            debug!("session is not active, starting libinput in paused state");
+            libinput.suspend();
+        }
+
         let input_backend = LibinputInputBackend::new(libinput.clone());
         event_loop
             .insert_source(input_backend, |mut event, _, state| {
@@ -506,11 +511,6 @@ impl Tty {
         }
         info!("using as the render node: {node_path}");
 
-        let mut ignored_nodes = ignored_nodes_from_config(&config.borrow());
-        if ignored_nodes.remove(&primary_node) || ignored_nodes.remove(&primary_render_node) {
-            warn!("ignoring the primary node or render node is not allowed");
-        }
-
         Ok(Self {
             config,
             session,
@@ -519,11 +519,10 @@ impl Tty {
             gpu_manager,
             primary_node,
             primary_render_node,
-            ignored_nodes,
+            ignored_nodes: HashSet::new(),
             devices: HashMap::new(),
             dmabuf_global: None,
             update_output_config_on_resume: false,
-            update_ignored_nodes_on_resume: false,
             debug_tint: false,
             ipc_outputs: Arc::new(Mutex::new(HashMap::new())),
             outputs_suspended: false,
@@ -531,6 +530,17 @@ impl Tty {
     }
 
     pub fn init(&mut self, niri: &mut Niri) {
+        // If the session is inactive, skip initialization because we won't be able to do much with
+        // the devices anyway. We'll get ActivateSession and add the devices there instead.
+        //
+        // This can happen when starting niri while having a different TTY active (e.g. via tmux).
+        if !self.session.is_active() {
+            return;
+        }
+
+        // Initialize the ignored nodes.
+        self.ignored_nodes = self.compute_ignored_nodes();
+
         let udev = self.udev_dispatcher.clone();
         let udev = udev.as_source_ref();
 
@@ -569,6 +579,10 @@ impl Tty {
                     debug!("skipping UdevEvent::Added as session is inactive");
                     return;
                 }
+
+                // Recompute ignored nodes to resolve symlinks (like /dev/dri/by-path/...) to their
+                // new underlying device IDs.
+                self.ignored_nodes = self.compute_ignored_nodes();
 
                 if let Err(err) = self.device_added(device_id, &path, niri) {
                     warn!("error adding device: {err:?}");
@@ -617,16 +631,9 @@ impl Tty {
                     warn!("error resuming libinput");
                 }
 
-                if self.update_ignored_nodes_on_resume {
-                    self.update_ignored_nodes_on_resume = false;
-                    let mut ignored_nodes = ignored_nodes_from_config(&self.config.borrow());
-                    if ignored_nodes.remove(&self.primary_node)
-                        || ignored_nodes.remove(&self.primary_render_node)
-                    {
-                        warn!("ignoring the primary node or render node is not allowed");
-                    }
-                    self.ignored_nodes = ignored_nodes;
-                }
+                // While the session was suspended, GPUs could have been added, so
+                // /dev/dri/by-path/... symlinks need to be re-resolved.
+                self.ignored_nodes = self.compute_ignored_nodes();
 
                 let mut device_list = self
                     .udev_dispatcher
@@ -669,7 +676,7 @@ impl Tty {
                     let device = self.devices.get_mut(&node).unwrap();
 
                     // Someone on an old device hit what seems to be a driver bug without this:
-                    // https://github.com/YaLTeR/niri/issues/3048
+                    // https://github.com/niri-wm/niri/issues/3048
                     let force_disable = self
                         .config
                         .borrow()
@@ -723,7 +730,14 @@ impl Tty {
                 }
 
                 // Add new devices.
-                for (device_id, path) in device_list.into_iter() {
+                //
+                // Add the primary node first as later nodes might depend on the primary render
+                // node being available.
+                let primary_device_id = self.primary_node.dev_id();
+                let primary_device_path = device_list.remove(&primary_device_id);
+                let primary = primary_device_path.map(|path| (primary_device_id, path));
+
+                for (device_id, path) in primary.into_iter().chain(device_list) {
                     if let Err(err) = self.device_added(device_id, &path, niri) {
                         warn!("error adding device: {err:?}");
                     }
@@ -833,7 +847,10 @@ impl Tty {
                 .context("error creating renderer")?;
 
             if let Err(err) = renderer.bind_wl_display(&niri.display_handle) {
-                warn!("error binding wl-display in EGL: {err:?}");
+                // wl_drm is on its way out so this is expected on most modern distros.
+                trace!("error binding legacy EGL to wl_display: {err}");
+            } else {
+                debug!("bound legacy EGL to wl_display");
             }
 
             let gles_renderer = renderer.as_gles_renderer();
@@ -1009,6 +1026,32 @@ impl Tty {
                     crtc: Some(crtc), ..
                 } => {
                     removed.push(crtc);
+                }
+                // Emitted when the list of connector modes changes at runtime.
+                //
+                // Some devices, notably USB-C docks with DP-MST/alt-mode, report Connected before
+                // the EDID has been read, with an empty mode list. Then, at a later point, the
+                // modes will be populated, at which point we'll get this Changed event.
+                DrmScanEvent::Changed {
+                    connector,
+                    crtc: Some(crtc),
+                } => {
+                    let connector_name = format_connector_name(&connector);
+                    let name = make_output_name(&device.drm, connector.handle(), connector_name);
+                    debug!(
+                        "connector changed: {} \"{}\"",
+                        &name.connector,
+                        name.format_make_model_serial(),
+                    );
+
+                    if !device.known_crtcs.contains_key(&crtc) {
+                        // I guess this can happen if the connector initially wasn't mapped to a
+                        // CRTC but then got mapped before being changed.
+                        warn!("changed connector missing from known crtcs");
+                    }
+
+                    // We don't actually need to do anything here; on_output_config_changed() will
+                    // take care of picking a new mode if needed.
                 }
                 _ => (),
             }
@@ -1442,7 +1485,7 @@ impl Tty {
 
         // Create the compositor.
         let res = DrmCompositor::new(
-            OutputModeSource::Auto(output.clone()),
+            OutputModeSource::Auto(output.downgrade()),
             surface,
             None,
             device.allocator.clone(),
@@ -1472,7 +1515,7 @@ impl Tty {
                     .create_surface(crtc, mode, &[connector.handle()])?;
 
                 DrmCompositor::new(
-                    OutputModeSource::Auto(output.clone()),
+                    OutputModeSource::Auto(output.downgrade()),
                     surface,
                     None,
                     device.allocator.clone(),
@@ -1550,8 +1593,6 @@ impl Tty {
 
         niri.add_output(output.clone(), Some(refresh_interval(mode)), vrr_enabled);
 
-        let mut renderer = self.gpu_manager.single_renderer(&render_node)?;
-        EffectsFramebuffers::init_for_output(&output, &mut renderer, None);
 
         if niri.monitors_active {
             // Redraw the new monitor.
@@ -1737,8 +1778,8 @@ impl Tty {
                 // This is an error!() because it shouldn't happen, but on some systems it somehow
                 // does. Kernel sending rogue vblank events?
                 //
-                // https://github.com/YaLTeR/niri/issues/556
-                // https://github.com/YaLTeR/niri/issues/615
+                // https://github.com/niri-wm/niri/issues/556
+                // https://github.com/niri-wm/niri/issues/615
                 error!(
                     "unexpected redraw state for output {name} (should be WaitingForVBlank); \
                      can happen when resuming from sleep or powering on monitors: {state:?}"
@@ -1911,8 +1952,12 @@ impl Tty {
         };
 
         // Render the elements.
-        let mut elements =
-            niri.render::<TtyRenderer>(&mut renderer, output, true, RenderTarget::Output);
+        let ctx = RenderCtx {
+            renderer: &mut renderer,
+            target: RenderTarget::Output,
+            xray: None,
+        };
+        let mut elements = niri.render_to_vec(ctx, output, true);
 
         // Visualize the damage, if enabled.
         if niri.debug_draw_damage {
@@ -2395,22 +2440,25 @@ impl Tty {
         }
     }
 
-    pub fn update_ignored_nodes_config(&mut self, niri: &mut Niri) {
-        let _span = tracy_client::span!("Tty::update_ignored_nodes_config");
-
-        // If we're inactive, we can't do anything, so just set a flag for later.
-        if !self.session.is_active() {
-            self.update_ignored_nodes_on_resume = true;
-            return;
-        }
-
+    fn compute_ignored_nodes(&self) -> HashSet<DrmNode> {
         let mut ignored_nodes = ignored_nodes_from_config(&self.config.borrow());
         if ignored_nodes.remove(&self.primary_node)
             || ignored_nodes.remove(&self.primary_render_node)
         {
             warn!("ignoring the primary node or render node is not allowed");
         }
+        ignored_nodes
+    }
 
+    pub fn update_ignored_nodes_config(&mut self, niri: &mut Niri) {
+        let _span = tracy_client::span!("Tty::update_ignored_nodes_config");
+
+        // If we're inactive, we can't do anything, but we'll recompute in ActivateSession.
+        if !self.session.is_active() {
+            return;
+        }
+
+        let ignored_nodes = self.compute_ignored_nodes();
         if ignored_nodes == self.ignored_nodes {
             return;
         }
@@ -2491,7 +2539,7 @@ impl Tty {
 
         for (&node, device) in &mut self.devices {
             let scanner = &device.drm_scanner as *const DrmScanner;
-            let render_node = device.render_node.unwrap_or(self.primary_render_node);
+            let _render_node = device.render_node.unwrap_or(self.primary_render_node);
             let mut surfaces = mem::take(&mut device.surfaces);
             let mut powered = mem::take(&mut device.powered_down_surfaces);
             for (&crtc, surface) in surfaces.iter_mut().chain(powered.iter_mut()) {
@@ -2616,21 +2664,6 @@ impl Tty {
                         surface.compositor.vrr_enabled(),
                     );
                     niri.output_resized(&output);
-                    let renderer = self.gpu_manager.single_renderer(&render_node);
-                    match renderer {
-                        Ok(mut renderer) => {
-                            if let Err(e) =
-                                EffectsFramebuffers::update_for_output(&output, &mut renderer, None)
-                            {
-                                warn!("failed to update fx buffers after output resize: {e:?}");
-                            } else {
-                                EffectsFramebuffers::set_dirty(&output);
-                            }
-                        }
-                        Err(e) => {
-                            warn!("failed to get renderer after output resize: {e:?}");
-                        }
-                    }
                 }
             }
 
@@ -2916,7 +2949,7 @@ fn surface_dmabuf_feedback(
     primary_formats: FormatSet,
     primary_render_node: DrmNode,
     surface_render_node: Option<DrmNode>,
-    _surface_scanout_node: DrmNode,
+    surface_scanout_node: DrmNode,
 ) -> Result<SurfaceDmabufFeedback, io::Error> {
     let surface = compositor.surface();
     let planes = surface.planes();
@@ -2957,7 +2990,22 @@ fn surface_dmabuf_feedback(
         primary_or_overlay_scanout_formats.len() - primary_scanout_formats.len(),
     );
 
-    let scanout = builder.clone().build()?;
+    // Prefer the primary-plane-only formats, then primary-or-overlay-plane formats. This will
+    // increase the chance of scanning out a client even with our disabled-by-default overlay
+    // planes.
+    let scanout = builder
+        .clone()
+        .add_preference_tranche(
+            surface_scanout_node.dev_id(),
+            Some(TrancheFlags::Scanout),
+            primary_scanout_formats,
+        )
+        .add_preference_tranche(
+            surface_scanout_node.dev_id(),
+            Some(TrancheFlags::Scanout),
+            primary_or_overlay_scanout_formats,
+        )
+        .build()?;
 
     // If this is the primary node surface, send scanout formats in both tranches to avoid
     // duplication.

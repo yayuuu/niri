@@ -2,7 +2,7 @@
 
 In this section you can configure input devices like keyboard and mouse, and some input-related options.
 
-There's a section for each device type: `keyboard`, `touchpad`, `mouse`, `trackpoint`, `tablet`, `touch`.
+There's a section for each device type: `keyboard`, `touchpad`, `mouse`, `trackpoint`, `trackball`, `tablet`, `touch`.
 Settings in those sections will apply to every device of that type.
 Currently, there's no way to configure specific devices individually (but that is planned).
 
@@ -89,6 +89,7 @@ input {
     tablet {
         // off
         map-to-output "eDP-1"
+        // map-to-focused-output
         // left-handed
         // calibration-matrix 1.0 0.0 0.0 0.0 1.0 0.0
     }
@@ -280,6 +281,10 @@ input {
 Valid output names are the same as the ones used for output configuration.
 
 <sup>Since: 0.1.7</sup> When a tablet is not mapped to any output, it will map to the union of all connected outputs, without aspect ratio correction.
+
+Setting specific to `tablet`:
+
+- `map-to-focused-output`: <sup>Since: 26.04</sup> will map the tablet to the focused output, takes precedence over `map-to-output`.
 
 ### General Settings
 
