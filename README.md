@@ -12,6 +12,13 @@ Video preview:
 [![Center columns](https://img.youtube.com/vi/DDytn7EgzjY/0.jpg)](https://www.youtube.com/watch?v=DDytn7EgzjY)
 <br><br>
 
+## Tabbed window groups
+Adds tabbed window groups, with actions to toggle a group and move windows into or out of a group.
+Implementation by Naxdy: https://github.com/Naxdy/niri
+
+![Tabbed window groups](assets/screenshots/groups-blur.png)
+<br><br>
+
 ## Release and modifier only keybinds
 Merges a working implementation of release keybinds (https://github.com/YaLTeR/niri/pull/2456), so you can run app launcher by only pressing Super key. Allows muting microphone in push-to-talk like way, and many more. 
 
